@@ -64,7 +64,8 @@
                         </Grid.ColumnDefinitions>
                         <TextBlock Text="Server URL:" VerticalAlignment="Center"/>
                         <TextBox x:Name="WsUrlTextBox" Grid.Column="1"
-                                 Text="wss://graptolite.ai/api/v1/bridge/ws" Padding="5,3"/>
+                                 Text="" Padding="5,3"
+                                 ToolTip="wss://&lt;host&gt;/api/v1/bridge/ws - stored in Commands\commandRegistry.json"/>
                     </Grid>
                     <Grid>
                         <Grid.ColumnDefinitions>

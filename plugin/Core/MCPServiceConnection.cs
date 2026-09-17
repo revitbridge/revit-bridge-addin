@@ -74,6 +74,15 @@ namespace revit_mcp_plugin.Core
             }
             else
             {
+                if (string.IsNullOrWhiteSpace(settings.WsUrl))
+                {
+                    TaskDialog.Show("revitMCP",
+                        "No WebSocket server URL configured.\n" +
+                        "Set 'wsUrl' in Commands\\commandRegistry.json (installer -Server) " +
+                        "or in Settings > Connection, then click the switch again.");
+                    return Result.Failed;
+                }
+
                 service.Initialize(commandData.Application);
                 service.Start(settings.WsUrl, settings.SlotId);
                 TaskDialog.Show("revitMCP",

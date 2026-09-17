@@ -317,7 +317,7 @@
     "logLevel": "Info",
     "port": 18080,
     "mode": "tcp",
-    "wsUrl": "wss://graptolite.ai/api/v1/bridge/ws",
+    "wsUrl": "",
     "slotId": "1",
     "token": "",
     "allowRemoteCodeExecution": false

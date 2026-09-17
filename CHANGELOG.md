@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1 (2026-09-17)
+
+- No built-in WebSocket server URL: `wsUrl` comes only from `commandRegistry.json` (installer `-Server` or the Settings page). The Settings page no longer pre-fills a host; the switch shows a message instead of connecting when `wsUrl` is empty in `websocket` mode.
+
 ## 0.1.0 (2026-09-17)
 
 First release under the revitbridge organization. History before this point lives in `imkcrevit/revit-api-rag` (`revit_plugin/`), imported with `git subtree split`.

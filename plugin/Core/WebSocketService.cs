@@ -111,7 +111,7 @@ namespace revit_mcp_plugin.Core
         /// Start the WebSocket client.
         /// </summary>
         /// <param name="serverUrl">
-        /// Base WebSocket URL, e.g. "wss://graptolite.ai/api/v1/bridge/ws"
+        /// Base WebSocket URL from commandRegistry.json, e.g. "wss://host/api/v1/bridge/ws"
         /// </param>
         /// <param name="slotId">Slot number 1-5</param>
         public void Start(string serverUrl, string slotId)

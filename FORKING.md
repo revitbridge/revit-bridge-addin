@@ -46,6 +46,5 @@ Update `NOTICE` with your own copyright line on top and leave the existing attri
 
 ## 6. Defaults you may want to change
 
-- `plugin/Configuration/ServiceSettings.cs`: `DefaultWsUrl`, default port `18080`.
-- `plugin/UI/ConnectionSettingsPage.xaml`: the pre-filled server URL.
-- `commandRegistry.json` (repo root): the shipped default `settings`.
+- `commandRegistry.json` (repo root): the shipped default `settings`. The server URL (`wsUrl`) has no built-in default in code; it lives only in this file and is written by the installer (`-Server`) or the Settings page.
+- `plugin/Configuration/ServiceSettings.cs`: default port `18080`.

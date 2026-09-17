@@ -43,7 +43,7 @@ namespace revit_mcp_plugin.UI
                         var s = config.Settings;
 
                         PortTextBox.Text = s.Port.ToString();
-                        WsUrlTextBox.Text = s.WsUrl ?? ServiceSettings.DefaultWsUrl;
+                        WsUrlTextBox.Text = s.WsUrl ?? "";
 
                         // Set slot combo
                         int slotIndex;
