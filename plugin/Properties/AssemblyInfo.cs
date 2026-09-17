@@ -1,39 +1,27 @@
 using System.Reflection;
 using System.Runtime.InteropServices;
 
-// ?????????????
-// ?????????????
-// ??????????
-[assembly: AssemblyTitle("mcp-servers-for-revit-plugin")]
-[assembly: AssemblyDescription("")]
+// General information about this assembly.
+[assembly: AssemblyTitle("revit-bridge-addin")]
+[assembly: AssemblyDescription("Revit add-in for revit-bridge (fork of mcp-servers-for-revit)")]
 [assembly: AssemblyConfiguration("")]
-[assembly: AssemblyCompany("P R C")]
-[assembly: AssemblyProduct("mcp-servers-for-revit-plugin")]
-[assembly: AssemblyCopyright("Copyright © P R C 2025")]
+[assembly: AssemblyCompany("revitbridge")]
+[assembly: AssemblyProduct("revit-bridge-addin")]
+[assembly: AssemblyCopyright("Copyright (c) 2026 revitbridge; portions Copyright (c) 2026 sparx-fire / mcp-servers-for-revit")]
 [assembly: AssemblyTrademark("")]
 [assembly: AssemblyCulture("")]
 
-
-// ? ComVisible ??? false ??????????
-//? COM ??????????? COM ??????????
-//?????? ComVisible ????? true?
+// Setting ComVisible to false makes the types in this assembly not visible
+// to COM components.
 [assembly: ComVisible(false)]
 
-// ?????? COM ??,??? GUID ?????? ID
+// The following GUID is for the ID of the typelib if this project is exposed to COM.
+// It is unrelated to the Revit add-in ClientId in revit-bridge.addin.
 [assembly: Guid("43cd0fd7-df41-4f64-92be-a0f78666d86f")]
 
-// ????????????????: 
-//
-//      ???
-//      ???
-//      ???
-//      ???
-//
-//?????????,?????“???”?“???”????
-//???? "*",????:
-// [assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+// Version information. Keep in sync with CHANGELOG.md.
+[assembly: AssemblyVersion("0.1.0.0")]
+[assembly: AssemblyFileVersion("0.1.0.0")]
 
 #if NET5_0_OR_GREATER || NETCOREAPP3_1_OR_GREATER
 [assembly: System.Runtime.Versioning.SupportedOSPlatformAttribute("windows")]

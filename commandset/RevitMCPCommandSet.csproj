@@ -8,6 +8,8 @@
         <PublishAddinFiles>true</PublishAddinFiles>
         <Configurations>Debug R20;Debug R21;Debug R22;Debug R23;Debug R24;Debug R25;Debug R26</Configurations>
         <Configurations>$(Configurations);Release R20;Release R21;Release R22;Release R23;Release R24;Release R25;Release R26</Configurations>
+        <!-- Must match AddinFolderName in ..\plugin\RevitMCPPlugin.csproj. -->
+        <AddinFolderName>revit-bridge</AddinFolderName>
     </PropertyGroup>
 
     <PropertyGroup Condition="$(Configuration.Contains('R20'))">
@@ -67,9 +69,9 @@
 
     <Target Name="DeployCommandSet" AfterTargets="Build">
         <PropertyGroup>
-            <PluginAddInRoot>$(ProjectDir)..\plugin\bin\AddIn $(RevitVersion) $(Configuration)\revit_mcp_plugin\</PluginAddInRoot>
+            <PluginAddInRoot>$(ProjectDir)..\plugin\bin\AddIn $(RevitVersion) $(Configuration)\$(AddinFolderName)\</PluginAddInRoot>
             <CommandSetPluginDir>$(PluginAddInRoot)Commands\RevitMCPCommandSet\</CommandSetPluginDir>
-            <RevitAddinsDir>$(AppData)\Autodesk\Revit\Addins\$(RevitVersion)\revit_mcp_plugin\Commands\RevitMCPCommandSet\</RevitAddinsDir>
+            <RevitAddinsDir>$(AppData)\Autodesk\Revit\Addins\$(RevitVersion)\$(AddinFolderName)\Commands\RevitMCPCommandSet\</RevitAddinsDir>
         </PropertyGroup>
 
         <ItemGroup>

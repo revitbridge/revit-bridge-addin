@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>revit-bridge</Name>
+    <Assembly>revit-bridge/RevitMCPPlugin.dll</Assembly>
+    <FullClassName>revit_mcp_plugin.Core.Application</FullClassName>
+    <ClientId>94B7DDE6-3238-488E-A668-B8C659155206</ClientId>
+    <VendorId>RevitBridge</VendorId>
+    <VendorDescription>https://github.com/revitbridge</VendorDescription>
+  </AddIn>
+</RevitAddIns>

@@ -1,140 +1,105 @@
-# Revit Plugin (TCP + Remote WebSocket)
+# revit-bridge-addin
 
-Revit 2026插件，既可提供TCP JSON-RPC 2.0服务，也可主动连接远程WebSocket Bridge，接收Python端发来的命令和动态C#代码执行请求。
+Revit add-in for [revit-bridge](https://github.com/revitbridge/revit-bridge). It exposes a small JSON-RPC surface (24 commands plus dynamic C# execution) that the `revit-bridge` MCP server or a [revit-bridge-web](https://github.com/revitbridge/revit-bridge-web) host drives.
 
-## 来源
+Revit 2026 插件：本地 TCP 或远程 WebSocket 两种模式，供 `revit-bridge` MCP 服务器或演示宿主调用。
 
-源码 fork 自 [mcp-servers-for-revit](https://github.com/mcp-servers-for-revit/mcp-servers-for-revit)（MIT License），仅保留 `plugin/` 和 `commandset/` 部分，删除了 Node.js MCP Server（由本项目的 Python RAG Server 替代）。
+Fork of [mcp-servers-for-revit](https://github.com/mcp-servers-for-revit/mcp-servers-for-revit) (MIT). Only `plugin/` and `commandset/` were kept; see [NOTICE](NOTICE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-原始项目 License 见 [LICENSE-upstream](./LICENSE-upstream)。
+## Install
 
-## 本项目的修改
+Requirements: Windows x64, Autodesk Revit 2026, PowerShell 5.1 or later. Close Revit first.
 
-| 文件 | 修改内容 |
-|------|----------|
-| `plugin/Configuration/ServiceSettings.cs` | 默认端口 `8080` → `18080` |
-| `plugin/Core/SocketService.cs` | 硬编码端口 `8080` → `18080`（避免与 AdskLicensingAgent 冲突） |
-| `plugin/Core/WebSocketService.cs` | 增加WSS重连、槽位令牌握手和远程代码执行开关 |
-| `plugin/UI/ConnectionSettingsPage.*` | 增加TCP/WebSocket连接模式与槽位设置 |
+One line, local mode (Revit listens on `127.0.0.1:18080`, no token needed):
 
-远程握手必须发送`User-Agent: RevitMCPPlugin/0.3`。Cloudflare会对缺少该请求头的
-.NET `ClientWebSocket`握手返回HTTP 403；修正版会正常升级为HTTP 101。
-
-## 编译
-
-**前置条件**：
-- .NET 8 SDK
-- Windows构建环境（WPF/WindowsDesktop SDK）
-
-```bash
-cd revit_plugin
-dotnet build plugin/RevitMCPPlugin.csproj -c "Release R26"
-dotnet build commandset/RevitMCPCommandSet.csproj -c "Release R26"
+```powershell
+irm https://raw.githubusercontent.com/revitbridge/revit-bridge-addin/main/installer/install.ps1 | iex
 ```
 
-编译产物输出到 `plugin/bin/AddIn 2026 Release R26/revit_mcp_plugin/`。必须同时
-编译`plugin`和`commandset`，后者会把24个命令及Roslyn依赖复制到最终插件目录。
+Remote mode (Revit connects out to a bridge server; nothing is exposed on your machine):
 
-## 部署
-
-### 方式 A：使用加密Demo Kit（远程联调推荐）
-
-1. 下载本次联调提供的加密`Revit-Demo-Kit.7z`并解压。
-2. 关闭Revit，以PowerShell运行`install-revit-demo.ps1`。
-3. 首次安装保持远程代码执行关闭；只读联通通过后，运行
-   `./install-revit-demo.ps1 -EnableRemoteCodeExecution`并重新启动Revit。
-
-旧的`v0.2.0-plugin`Release早于WebSocket和槽位鉴权实现，不适用于本次远程联调。
-
-### 方式 B：从源码编译
-
-1. 按上面的编译步骤生成 DLL
-2. 将 `plugin/bin/AddIn 2026 Release R26/revit_mcp_plugin/` 复制到 `%AppData%\Autodesk\Revit\Addins\2026\`
-3. 将`mcp-servers-for-revit.addin`复制到`%AppData%\Autodesk\Revit\Addins\2026\`
-4. 将`commandRegistry.json`复制到插件目录的`Commands\`，再按下方远程WebSocket说明配置。
-
-### 部署后的文件结构
-
-```
-%AppData%\Autodesk\Revit\Addins\2026\
-├── mcp-servers-for-revit.addin          ← 插件注册
-└── revit_mcp_plugin\
-    ├── RevitMCPPlugin.dll               ← 主插件 DLL
-    ├── RevitMCPSDK.dll                  ← SDK 依赖
-    ├── Microsoft.Windows.SDK.NET.dll
-    ├── Newtonsoft.Json.dll
-    ├── WinRT.Runtime.dll
-    └── Commands\
-        ├── commandRegistry.json         ← 命令注册（24 条）
-        └── RevitMCPCommandSet\
-            ├── command.json             ← 命令定义
-            └── 2026\
-                ├── RevitMCPCommandSet.dll   ← 命令实现
-                ├── Microsoft.CodeAnalysis.CSharp.dll  ← Roslyn
-                ├── Microsoft.CodeAnalysis.dll
-                └── ...
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/revitbridge/revit-bridge-addin/main/installer/install.ps1))) -Mode remote -Server wss://<host>/api/v1/bridge/ws -Slot 1
 ```
 
-## 使用
+The installer downloads the latest [Release](https://github.com/revitbridge/revit-bridge-addin/releases), verifies it against `SHA256SUMS.txt`, backs up any previous install to `revit-bridge.backup-<timestamp>`, and writes the connection settings. Revit shows an "unsigned add-in" prompt on first load: releases are not code-signed yet (see [Signing](#signing)).
 
-### 本地TCP模式
+Installer parameters:
 
-1. 启动 Revit 2026
-2. 点击 Ribbon 上的 **"Revit MCP Switch"** 按钮启动 TCP 服务
-3. 服务监听 `localhost:18080`，接受 JSON-RPC 2.0 请求
-4. Python 端通过 `mcp_bridge/revit_client.py` 连接
+| Parameter | Default | Meaning |
+|---|---|---|
+| `-Mode local\|remote` | `local` | TCP on localhost, or outbound WebSocket to `-Server` |
+| `-Server <wss url>` | | Bridge server base URL, required for `remote` |
+| `-Slot 1..5` | `1` | Slot on the bridge server (`remote`) |
+| `-Token <value>` | | Optional slot token (`remote`); a token from a previous install is kept when omitted |
+| `-AllowRemoteCode` | off | Remote mode: allow `send_code_to_revit` / `manage_solidified_tools` (rejected otherwise) |
+| `-Source release\|<dir>` | `release` | Install from GitHub Releases, or from a local directory (see [Build](#build)) |
+| `-RevitVersion` | `2026` | Target Revit year |
+| `-Repo`, `-Tag` | `revitbridge/revit-bridge-addin`, `latest` | Where to download from (forks point at their own repo) |
 
-### 远程WebSocket模式（graptolite.ai）
+Manual install: unzip the release into `%APPDATA%\Autodesk\Revit\Addins\2026\` so that `revit-bridge.addin` and the `revit-bridge\` folder sit side by side, then edit `revit-bridge\Commands\commandRegistry.json` (see [Configure](#configure)).
 
-远程模式不需要、也不应该把Windows上的`18080`暴露到公网。插件主动通过
-`wss://graptolite.ai/api/v1/bridge/ws/{slot_id}`连接服务器的443端口。
+## Use
 
-服务器部署侧先运行：
+1. Start Revit 2026. The **Revit MCP Plugin** panel appears on the ribbon.
+2. Click **Revit MCP Switch** to start (or stop) the service. **Settings** opens the connection page.
+3. Connect a client:
+   - **Local mode**: run the MCP server on the same machine, e.g. `uvx revit-bridge` in Claude Desktop / Claude Code, and `revit-bridge check` to confirm the link. The add-in listens on TCP `127.0.0.1:18080` (JSON-RPC 2.0, loopback only).
+   - **Remote mode**: the add-in dials `wss://<host>/api/v1/bridge/ws/<slot>` on port 443, sends `User-Agent: RevitMCPPlugin/0.3` and, if configured, the slot token as the first message. Open the web host, pick the same slot, and paste the token there.
 
-```bash
-scripts/init-bridge-token.sh
-docker compose up -d --build revit-api-rag
+In remote mode, `send_code_to_revit` and `manage_solidified_tools` are rejected unless `allowRemoteCodeExecution` is `true` (`-AllowRemoteCode`). Keep it off outside a dedicated test model. Local mode is not gated by this flag; the local MCP server's own confirmation step (`spec_confirmed`) applies instead. Per-call confirmation dialogs and pairing codes are planned for a later release.
+
+Logs: `%APPDATA%\Autodesk\Revit\Addins\2026\revit-bridge\Logs\mcp_YYYYMMDD.log`.
+
+## Build
+
+Requirements: .NET SDK pinned in [global.json](global.json) (9.0.x, `rollForward: latestFeature`), Windows (WPF). No Revit SDK is needed; Revit API packages come from NuGet.
+
+```powershell
+dotnet build plugin -c "Release R26"
+dotnet build commandset -c "Release R26"
 ```
 
-Revit端在`Settings → Connection`中选择`WebSocket (Cloud)`，服务器地址保持：
+Both projects must be built, in that order. The result is a complete, installable tree in `plugin\bin\AddIn 2026 Release R26\`:
 
-```text
-wss://graptolite.ai/api/v1/bridge/ws
+```
+AddIn 2026 Release R26\
++-- revit-bridge.addin
++-- revit-bridge\
+    +-- RevitMCPPlugin.dll, RevitMCPSDK.dll, Newtonsoft.Json.dll, ...
+    +-- Commands\
+        +-- commandRegistry.json
+        +-- RevitMCPCommandSet\{command.json, 2026\RevitMCPCommandSet.dll + Roslyn}
 ```
 
-初次联调使用槽位`1`。把服务器`.secrets/revit-slot-1.token`的内容写入插件目录下
-`Commands/commandRegistry.json`的`settings.token`；初次只读联调保持
-`allowRemoteCodeExecution: false`。确认槽位、`say_hello`和模型查询通过后，再按需显式开启远程代码执行。
+Install your own build with `.\installer\install.ps1 -Source "plugin\bin\AddIn 2026 Release R26"`. CI ([build.yml](.github/workflows/build.yml)) runs the same two commands and, on a `v*` tag, publishes `revit-bridge-addin-<tag>.zip` + `SHA256SUMS.txt` to Releases. Official builds and self-builds produce the same tree.
 
-`allowRemoteCodeExecution: true`是安装级执行授权。开启后，动态代码和已注册固化工具直接执行，不再在Revit内逐次显示代码确认弹窗；Slot令牌校验、服务器端安全审查以及固化工具注册确认仍然保留。
+`Debug R26` additionally copies the output into `%APPDATA%\Autodesk\Revit\Addins\2026\` (without touching an existing `commandRegistry.json`).
 
-浏览器打开`https://graptolite.ai/revit/`，选择`Slot 1`，把同一个令牌粘贴到
-`Slot token`输入框。令牌仅保存在当前标签页的`sessionStorage`中，关闭标签页后清除。
+### Signing
 
-## 关键参数
+Releases are currently unsigned (Revit shows a one-time "unsigned add-in" prompt). The workflow has an Authenticode step that runs only when the `SIGNING_PFX_BASE64` / `SIGNING_PFX_PASSWORD` secrets are set. Self-builds are always unsigned.
 
-| 参数 | 值 | 说明 |
-|------|-----|------|
-| 端口 | 18080 | TCP 监听端口 |
-| 协议 | JSON-RPC 2.0 | UTF-8 编码 |
-| Buffer | 8192 bytes | 单次读取上限 |
-| 超时 | 60s | 代码执行超时 |
-| 命令数 | 24 | 包含`send_code_to_revit`和`manage_solidified_tools` |
+### Forking
 
-## 24个预置命令
+Change the add-in identity before you redistribute a fork: see [FORKING.md](FORKING.md).
 
-| 命令 | 说明 |
-|------|------|
-| `say_hello` | 连通测试 |
-| `send_code_to_revit` | 动态 C# 代码执行（Roslyn 编译） |
-| `get_available_family_types` | 按类别查询族类型 |
-| `get_selected_elements` | 获取用户选中的元素 |
-| `operate_element` | 操作元素（选择/着色/隐藏/隔离） |
-| `create_point_based_element` | 创建点基族实例 |
-| `create_line_based_element` | 创建线基族实例 |
-| `create_surface_based_element` | 创建面基族实例 |
-| `create_wall` / `create_grid` / `create_level` / `create_room` | 创建建筑元素 |
-| `delete_element` | 删除元素 |
-| `analyze_model_statistics` | 模型统计分析 |
-| `manage_solidified_tools` | 管理浏览器端固化工具 |
-| ... | 完整列表见 `command.json` |
+## Configure
+
+Settings live in `<addin folder>\Commands\commandRegistry.json` under `settings`. The installer writes them; the **Settings** button in Revit edits the same file.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `logLevel` | `"Info"` | Log verbosity |
+| `port` | `18080` | TCP port for local mode (bound to `127.0.0.1` only) |
+| `mode` | `"tcp"` | `"tcp"` (local) or `"websocket"` (remote) |
+| `wsUrl` | | Bridge server base URL for `websocket` mode, e.g. `wss://host/api/v1/bridge/ws` |
+| `slotId` | `"1"` | Slot `1`-`5` on the bridge server |
+| `token` | `""` | Optional pre-shared slot token, sent after the WebSocket handshake. Empty = not sent |
+| `allowRemoteCodeExecution` | `false` | Remote mode only: allow `send_code_to_revit` and `manage_solidified_tools`; rejected with an error when `false` |
+
+The `commands` array in the same file registers the 24 built-in commands from `RevitMCPCommandSet`; `command.json` next to the DLL holds their parameter schemas.
+
+## License
+
+MIT, see [LICENSE](LICENSE). Upstream code is MIT (c) sparx-fire / mcp-servers-for-revit, see [LICENSE-upstream](LICENSE-upstream). Bundled third-party libraries: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

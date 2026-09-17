@@ -316,7 +316,7 @@
   "settings": {
     "logLevel": "Info",
     "port": 18080,
-    "mode": "websocket",
+    "mode": "tcp",
     "wsUrl": "wss://graptolite.ai/api/v1/bridge/ws",
     "slotId": "1",
     "token": "",

@@ -1,0 +1,19 @@
+revit-bridge-addin
+Copyright (c) 2026 revitbridge (https://github.com/revitbridge)
+
+Licensed under the MIT License; see LICENSE.
+
+This project is a fork of mcp-servers-for-revit
+(https://github.com/mcp-servers-for-revit/mcp-servers-for-revit),
+Copyright (c) 2026 sparx-fire, Copyright (c) 2026 mcp-servers-for-revit,
+MIT License; see LICENSE-upstream. The "plugin" and "commandset" directories
+derive from that project. The upstream Node.js MCP server was removed and is
+replaced by the revit-bridge Python package.
+
+Changes made in this fork include: a new add-in identity (ClientId, VendorId,
+Name), the default TCP port 18080 bound to loopback, an outbound WebSocket
+mode with slot handshake and a remote code-execution switch, the installer,
+and the reproducible build / release workflow.
+
+Third-party libraries bundled with the built add-in are listed in
+THIRD_PARTY_NOTICES.md.
