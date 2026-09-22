@@ -318,8 +318,9 @@
     "port": 18080,
     "mode": "tcp",
     "wsUrl": "",
-    "slotId": "1",
+    "deviceId": "",
     "token": "",
+    "confirmEachRun": true,
     "allowRemoteCodeExecution": false
   }
 }

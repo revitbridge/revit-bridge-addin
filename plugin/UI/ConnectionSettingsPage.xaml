@@ -67,20 +67,18 @@
                                  Text="" Padding="5,3"
                                  ToolTip="wss://&lt;host&gt;/api/v1/bridge/ws - stored in Commands\commandRegistry.json"/>
                     </Grid>
-                    <Grid>
+                    <Grid Margin="0,0,0,10">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="80"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
-                        <TextBlock Text="Slot ID:" VerticalAlignment="Center"/>
-                        <ComboBox x:Name="SlotComboBox" Width="80" HorizontalAlignment="Left">
-                            <ComboBoxItem Content="1" IsSelected="True"/>
-                            <ComboBoxItem Content="2"/>
-                            <ComboBoxItem Content="3"/>
-                            <ComboBoxItem Content="4"/>
-                            <ComboBoxItem Content="5"/>
-                        </ComboBox>
+                        <TextBlock Text="Device:" VerticalAlignment="Center"/>
+                        <TextBlock x:Name="DeviceText" Grid.Column="1" Text="Not paired"
+                                   VerticalAlignment="Center" Foreground="#666"/>
                     </Grid>
+                    <CheckBox x:Name="ConfirmEachRunCheckBox" IsChecked="True"
+                              Content="Ask before each ad-hoc code run (recommended)"
+                              ToolTip="Shows a Yes/No dialog in Revit before send_code_to_revit requests that the server marks for confirmation. Capability packs never ask."/>
                 </StackPanel>
             </Border>
 

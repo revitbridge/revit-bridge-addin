@@ -45,10 +45,8 @@ namespace revit_mcp_plugin.UI
                         PortTextBox.Text = s.Port.ToString();
                         WsUrlTextBox.Text = s.WsUrl ?? "";
 
-                        // Set slot combo
-                        int slotIndex;
-                        if (int.TryParse(s.SlotId, out slotIndex) && slotIndex >= 1 && slotIndex <= 5)
-                            SlotComboBox.SelectedIndex = slotIndex - 1;
+                        DeviceText.Text = s.IsPaired ? $"Paired as {s.DeviceId}" : "Not paired";
+                        ConfirmEachRunCheckBox.IsChecked = s.ConfirmEachRun;
 
                         // Set mode radio
                         bool isWs = string.Equals(s.Mode, "websocket",
@@ -94,13 +92,13 @@ namespace revit_mcp_plugin.UI
             }
             else if (wsService.IsConnected)
             {
-                StatusText.Text = $"WebSocket connected to slot {wsService.SlotId}";
+                StatusText.Text = $"WebSocket connected as {wsService.DeviceId}";
             }
             else if (wsService.IsRunning)
             {
                 StatusText.Text = string.IsNullOrWhiteSpace(wsService.LastConnectionError)
-                    ? $"WebSocket connecting to slot {wsService.SlotId}..."
-                    : $"WebSocket reconnecting to slot {wsService.SlotId}. " +
+                    ? $"WebSocket connecting as {wsService.DeviceId}..."
+                    : $"WebSocket reconnecting as {wsService.DeviceId}. " +
                       $"Last error: {wsService.LastConnectionError}";
             }
             else
@@ -133,7 +131,7 @@ namespace revit_mcp_plugin.UI
                     config.Settings.Port = port;
 
                 config.Settings.WsUrl = WsUrlTextBox.Text.Trim();
-                config.Settings.SlotId = ((ComboBoxItem)SlotComboBox.SelectedItem)?.Content?.ToString() ?? "1";
+                config.Settings.ConfirmEachRun = ConfirmEachRunCheckBox.IsChecked == true;
 
                 string output = JsonConvert.SerializeObject(config, Formatting.Indented);
                 File.WriteAllText(configPath, output);

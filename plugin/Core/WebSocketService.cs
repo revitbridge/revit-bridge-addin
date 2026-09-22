@@ -35,7 +35,7 @@ namespace revit_mcp_plugin.Core
         private volatile string _lastConnectionError;
 
         private string _serverUrl;
-        private string _slotId;
+        private string _deviceId;
         private int _reconnectDelayMs = 5000;
 
         private UIApplication _uiApp;
@@ -72,7 +72,7 @@ namespace revit_mcp_plugin.Core
         public bool IsRunning => _isRunning;
         public bool IsConnected => _ws != null && _ws.State == WebSocketState.Open;
         public string LastConnectionError => _lastConnectionError;
-        public string SlotId => _slotId;
+        public string DeviceId => _deviceId;
         public string ServerUrl => _serverUrl;
 
         /// <summary>
@@ -113,13 +113,13 @@ namespace revit_mcp_plugin.Core
         /// <param name="serverUrl">
         /// Base WebSocket URL from commandRegistry.json, e.g. "wss://host/api/v1/bridge/ws"
         /// </param>
-        /// <param name="slotId">Slot number 1-5</param>
-        public void Start(string serverUrl, string slotId)
+        /// <param name="deviceId">Device id assigned when the pairing code was redeemed</param>
+        public void Start(string serverUrl, string deviceId)
         {
             if (_isRunning) return;
 
             _serverUrl = serverUrl.TrimEnd('/');
-            _slotId = slotId;
+            _deviceId = deviceId;
             _isRunning = true;
             _lastConnectionError = null;
             _cts = new CancellationTokenSource();
@@ -131,7 +131,7 @@ namespace revit_mcp_plugin.Core
             };
             _workerThread.Start();
 
-            _logger.Info($"WebSocket service starting → {_serverUrl}/{_slotId}");
+            _logger.Info($"WebSocket service starting → {_serverUrl}/{_deviceId}");
         }
 
         public void Stop()
@@ -202,12 +202,12 @@ namespace revit_mcp_plugin.Core
             // and upgrades normally with HTTP 101.
             _ws.Options.SetRequestHeader("User-Agent", "RevitMCPPlugin/0.3");
 
-            var uri = new Uri($"{_serverUrl}/{_slotId}");
+            var uri = new Uri($"{_serverUrl}/{_deviceId}");
             _logger.Info($"Connecting to {uri}...");
 
             await _ws.ConnectAsync(uri, _cts.Token);
             _lastConnectionError = null;
-            _logger.Info($"Connected to slot {_slotId}");
+            _logger.Info($"Connected as device {_deviceId}");
 
             // 连接后发送鉴权 token 完成握手（仅在配置了 token 时发送，向后兼容）
             // Send auth token after connecting to complete the handshake.
@@ -217,7 +217,7 @@ namespace revit_mcp_plugin.Core
                 string authMsg = JsonConvert.SerializeObject(new
                 {
                     type = "auth",
-                    slot_id = _slotId,
+                    device_id = _deviceId,
                     token = _authToken
                 });
                 byte[] authBytes = Encoding.UTF8.GetBytes(authMsg);

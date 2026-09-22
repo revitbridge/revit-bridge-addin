@@ -83,11 +83,20 @@ namespace revit_mcp_plugin.Core
                     return Result.Failed;
                 }
 
+                if (!settings.IsPaired)
+                {
+                    TaskDialog.Show("revitMCP",
+                        "This Revit is not paired with a bridge server.\n" +
+                        "Open Settings > Connection and enter a pairing code, " +
+                        "or re-run the installer with -Mode remote -Pair <code>.");
+                    return Result.Failed;
+                }
+
                 service.Initialize(commandData.Application);
-                service.Start(settings.WsUrl, settings.SlotId);
+                service.Start(settings.WsUrl, settings.DeviceId);
                 TaskDialog.Show("revitMCP",
                     $"WebSocket connection started\nServer: {settings.WsUrl}\n" +
-                    $"Slot: {settings.SlotId}\nCheck Settings > Connection for live status.");
+                    $"Device: {settings.DeviceId}\nCheck Settings > Connection for live status.");
             }
 
             return Result.Succeeded;
