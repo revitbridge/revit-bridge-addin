@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Reproducible CI build: `Directory.Build.props` sets `Deterministic` and, on GitHub Actions only, `ContinuousIntegrationBuild` (source paths mapped to `/_/`); the workflow prints the SHA-256 of both assemblies so runs can be compared. Local builds keep real paths in the PDB.
+- `commandset` builds with 0 warnings: `GeometryUtils.FindIntersection` uses `Curve.Intersect(Curve, CurveIntersectResultOption.Detailed)` on Revit 2026 (old overload kept for older configurations), an unused `catch` variable is dropped, and the meaningless `System.Net.Http` reference (net8) is removed.
 
 ## 0.1.1 (2026-09-17)
 
