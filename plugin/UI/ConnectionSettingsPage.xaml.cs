@@ -176,6 +176,12 @@ namespace revit_mcp_plugin.UI
             {
                 StatusText.Text = $"TCP Server running on port {SocketService.Instance.Port}";
             }
+            else if (wsService.IsUnpaired)
+            {
+                StatusText.Text =
+                    $"Unpaired or revoked: the server refused device {wsService.UnpairedDeviceId}. " +
+                    "Enter a new pairing code above.";
+            }
             else if (wsService.IsConnected)
             {
                 StatusText.Text = $"WebSocket connected as {wsService.DeviceId}";

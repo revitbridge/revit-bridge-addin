@@ -92,6 +92,20 @@ namespace revit_mcp_plugin.Core
                     return Result.Failed;
                 }
 
+                // 服务器已吊销/不认识这个 deviceId（close 4003）。配置里还是同一个设备时
+                // 直接提示，不再连；用户重新配对后 deviceId 变化，即可再连。
+                // The server refused this deviceId with close 4003. While the config
+                // still holds that same device, say so instead of reconnecting; after
+                // pairing again the deviceId differs and the switch works normally.
+                if (service.IsUnpaired &&
+                    string.Equals(service.UnpairedDeviceId, settings.DeviceId, StringComparison.Ordinal))
+                {
+                    TaskDialog.Show("revitMCP",
+                        $"Unpaired or revoked: the server refused device {settings.DeviceId}.\n" +
+                        "Pair this Revit again in Settings > Connection with a new pairing code.");
+                    return Result.Failed;
+                }
+
                 service.Initialize(commandData.Application);
                 service.Start(settings.WsUrl, settings.DeviceId);
                 TaskDialog.Show("revitMCP",

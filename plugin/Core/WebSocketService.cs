@@ -38,6 +38,12 @@ namespace revit_mcp_plugin.Core
         private string _deviceId;
         private int _reconnectDelayMs = 5000;
 
+        // 服务器以 close 4003 拒绝本设备（未配对 / 已吊销）：停止重连，记录当时的 deviceId。
+        // Server refused this device with close 4003 (unpaired / revoked): stop
+        // reconnecting and remember which deviceId was refused.
+        private volatile bool _isUnpaired;
+        private volatile string _unpairedDeviceId;
+
         private UIApplication _uiApp;
         private ICommandRegistry _commandRegistry;
         private ILogger _logger;
@@ -52,6 +58,11 @@ namespace revit_mcp_plugin.Core
             "send_code_to_revit",
             "manage_solidified_tools",
         };
+
+        // 中继的关闭码（阶段 7 规格 §3）
+        // Relay close codes (phase 7 spec, section 3).
+        private const int CloseAlreadyConnected = 4002;   // another connection holds this device
+        private const int CloseUnpairedOrRevoked = 4003;  // auth failed, unknown or revoked device
 
         public static WebSocketService Instance
         {
@@ -74,6 +85,15 @@ namespace revit_mcp_plugin.Core
         public string LastConnectionError => _lastConnectionError;
         public string DeviceId => _deviceId;
         public string ServerUrl => _serverUrl;
+
+        /// <summary>
+        /// <para>服务器已用 close 4003 拒绝本设备，重连已停止。</para>
+        /// <para>The server refused this device with close 4003; reconnecting stopped.</para>
+        /// </summary>
+        public bool IsUnpaired => _isUnpaired;
+
+        /// <summary>The deviceId the server refused, or null.</summary>
+        public string UnpairedDeviceId => _unpairedDeviceId;
 
         /// <summary>
         /// Initialize with Revit context and load commands.
@@ -122,6 +142,8 @@ namespace revit_mcp_plugin.Core
             _deviceId = deviceId;
             _isRunning = true;
             _lastConnectionError = null;
+            _isUnpaired = false;
+            _unpairedDeviceId = null;
             _cts = new CancellationTokenSource();
 
             _workerThread = new Thread(WorkerLoop)
@@ -184,6 +206,15 @@ namespace revit_mcp_plugin.Core
                     _logger.Warning($"WebSocket connection lost: {rootCause.Message}");
                 }
 
+                // 被服务器判定为未配对/已吊销：不再重连，等用户重新配对。
+                // Refused as unpaired/revoked: stop here until the user pairs again.
+                if (_isUnpaired)
+                {
+                    _isRunning = false;
+                    _logger.Warning("设备未配对或已吊销，已停止重连 / Device unpaired or revoked; stopped reconnecting.");
+                    break;
+                }
+
                 // Wait before reconnecting
                 if (_isRunning)
                 {
@@ -200,7 +231,7 @@ namespace revit_mcp_plugin.Core
             // Cloudflare rejects the header-less .NET ClientWebSocket handshake
             // with HTTP 403. An explicit product User-Agent reaches the origin
             // and upgrades normally with HTTP 101.
-            _ws.Options.SetRequestHeader("User-Agent", "RevitMCPPlugin/0.3");
+            _ws.Options.SetRequestHeader("User-Agent", AddinInfo.UserAgent);
 
             var uri = new Uri($"{_serverUrl}/{_deviceId}");
             _logger.Info($"Connecting to {uri}...");
@@ -209,25 +240,22 @@ namespace revit_mcp_plugin.Core
             _lastConnectionError = null;
             _logger.Info($"Connected as device {_deviceId}");
 
-            // 连接后发送鉴权 token 完成握手（仅在配置了 token 时发送，向后兼容）
-            // Send auth token after connecting to complete the handshake.
-            // Only sent when a token is configured, keeping the protocol backward compatible.
-            if (!string.IsNullOrEmpty(_authToken))
+            // 首条消息必须是鉴权握手，总是发送；服务器 10 秒内收不到即关闭连接。
+            // The first message must be the auth handshake and is always sent; the
+            // server closes the connection when it does not arrive within 10 s.
+            string authMsg = JsonConvert.SerializeObject(new
             {
-                string authMsg = JsonConvert.SerializeObject(new
-                {
-                    type = "auth",
-                    device_id = _deviceId,
-                    token = _authToken
-                });
-                byte[] authBytes = Encoding.UTF8.GetBytes(authMsg);
-                await _ws.SendAsync(
-                    new ArraySegment<byte>(authBytes),
-                    WebSocketMessageType.Text,
-                    endOfMessage: true,
-                    cancellationToken: _cts.Token);
-                _logger.Info("已发送鉴权握手 / Auth handshake sent");
-            }
+                type = "auth",
+                device_id = _deviceId,
+                token = _authToken ?? ""
+            });
+            byte[] authBytes = Encoding.UTF8.GetBytes(authMsg);
+            await _ws.SendAsync(
+                new ArraySegment<byte>(authBytes),
+                WebSocketMessageType.Text,
+                endOfMessage: true,
+                cancellationToken: _cts.Token);
+            _logger.Info("已发送鉴权握手 / Auth handshake sent");
 
             // Receive loop
             var buffer = new byte[65536];
@@ -248,10 +276,22 @@ namespace revit_mcp_plugin.Core
 
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
-                    string closeDetail = $"Server closed WebSocket connection: " +
-                        $"{result.CloseStatus} {result.CloseStatusDescription}".TrimEnd();
-                    _lastConnectionError = closeDetail;
-                    _logger.Warning(closeDetail);
+                    HandleServerClose((int?)result.CloseStatus, result.CloseStatusDescription);
+
+                    // 回一个关闭帧，让服务器干净地结束这条连接并立即释放本设备的登记，
+                    // 否则下次重连可能被判为"已连接"（4002）。失败不影响后续流程。
+                    // Answer with a close frame so the server finishes the handshake and
+                    // releases this device's registration right away; otherwise the next
+                    // reconnect can be refused as "already connected" (4002). Best effort.
+                    try
+                    {
+                        await _ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "",
+                            CancellationToken.None).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Debug("回送关闭帧失败 / Could not send the closing frame: {0}", ex.Message);
+                    }
                     break;
                 }
 
@@ -275,6 +315,45 @@ namespace revit_mcp_plugin.Core
                         cancellationToken: _cts.Token);
                 }
             }
+        }
+
+        /// <summary>
+        /// <para>处理服务器关闭帧：4003 = 未配对/已吊销（停止重连）；4002 = 该设备已有连接
+        /// （保持原有重试）；其他按普通断线处理。</para>
+        /// <para>Handle the server's close frame: 4003 = unpaired/revoked (stop
+        /// reconnecting), 4002 = this device is already connected elsewhere (keep
+        /// the existing retry), anything else is an ordinary disconnect.</para>
+        /// </summary>
+        private void HandleServerClose(int? closeCode, string description)
+        {
+            string detail = string.IsNullOrWhiteSpace(description) ? "" : ": " + description;
+
+            if (closeCode == CloseUnpairedOrRevoked)
+            {
+                _isUnpaired = true;
+                _unpairedDeviceId = _deviceId;
+                _lastConnectionError =
+                    $"Unpaired or revoked ({CloseUnpairedOrRevoked}){detail}. " +
+                    "Pair this Revit again in Settings > Connection.";
+                _logger.Warning(
+                    "服务器拒绝本设备（未配对/已吊销）/ Server refused this device (unpaired or revoked){0}",
+                    detail);
+                return;
+            }
+
+            if (closeCode == CloseAlreadyConnected)
+            {
+                _lastConnectionError =
+                    $"This device is already connected elsewhere ({CloseAlreadyConnected}){detail}. Retrying...";
+                _logger.Warning(
+                    "该设备已有活动连接，稍后重试 / Device already connected elsewhere; will retry{0}",
+                    detail);
+                return;
+            }
+
+            _lastConnectionError =
+                $"Server closed WebSocket connection: {closeCode?.ToString() ?? "unknown"}{detail}";
+            _logger.Warning(_lastConnectionError);
         }
 
         // ── JSON-RPC processing (identical to SocketService) ────────────
