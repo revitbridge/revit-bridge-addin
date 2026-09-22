@@ -44,7 +44,7 @@ jobs:
           Get-FileHash -Algorithm SHA256 -Path @(
             (Join-Path $addinDir "RevitMCPPlugin.dll"),
             (Join-Path $addinDir "Commands\RevitMCPCommandSet\2026\RevitMCPCommandSet.dll")
-          ) | Format-Table Hash, Path -AutoSize
+          ) | Format-Table Hash, @{ n = 'File'; e = { Split-Path $_.Path -Leaf } } -AutoSize
 
       - name: Sign assemblies (only when a signing certificate is configured)
         if: env.SIGNING_PFX_BASE64 != ''
