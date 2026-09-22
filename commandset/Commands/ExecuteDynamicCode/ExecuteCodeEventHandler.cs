@@ -47,9 +47,11 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
                 var doc = app.ActiveUIDocument.Document;
                 ResultInfo = new ExecutionResultInfo();
 
-                // Execute without a per-run Revit confirmation dialog. Remote dynamic code
-                // still requires an authenticated slot, allowRemoteCodeExecution=true, and
-                // the server-side sandbox review before it reaches this handler.
+                // The per-run confirmation dialog lives in the plugin's transports
+                // (ConfirmationPrompt), which own the confirmEachRun setting and answer
+                // -32001 "declined on device" before this handler is reached. By the time
+                // code arrives here it also passed the device handshake,
+                // allowRemoteCodeExecution and the server-side review.
 
                 using (var transaction = new Transaction(doc, "执行AI代码"))
                 {

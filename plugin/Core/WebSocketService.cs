@@ -50,6 +50,7 @@ namespace revit_mcp_plugin.Core
         private CommandExecutor _commandExecutor;
         private string _authToken;
         private bool _allowRemoteCodeExecution;
+        private bool _confirmEachRun = true;
 
         // 代码执行类高危方法白名单（默认关闭，除非配置显式允许）
         // Code-execution class of high-risk methods (disabled by default unless config allows).
@@ -119,6 +120,12 @@ namespace revit_mcp_plugin.Core
             _authToken = configManager.Config?.Settings?.Token;
             _allowRemoteCodeExecution =
                 configManager.Config?.Settings?.AllowRemoteCodeExecution ?? false;
+            _confirmEachRun = configManager.Config?.Settings?.ConfirmEachRun ?? true;
+
+            // 确认对话框的外部事件必须在 Revit UI 线程上创建（Initialize 由 Ribbon 点击触发）。
+            // The confirmation dialog's external event has to be created on the Revit UI
+            // thread; Initialize() runs from the ribbon click.
+            ConfirmationPrompt.Initialize();
 
             CommandManager commandManager = new CommandManager(
                 _commandRegistry, _logger, configManager, _uiApp);
@@ -389,6 +396,19 @@ namespace revit_mcp_plugin.Core
                     return CreateErrorResponse(request.Id,
                         JsonRPCErrorCodes.MethodNotFound,
                         $"Method '{request.Method}' not found");
+                }
+
+                // 逐次确认：服务器给即席代码的请求加 confirm 参数，设备侧弹窗询问设计师。
+                // 能力包、探针、读取不带 confirm，不弹窗。
+                // Per-run confirmation: the server marks ad-hoc code requests with a
+                // confirm object and the device asks the designer. Capability packs,
+                // probes and reads carry no confirm and never prompt.
+                if (ConfirmationPrompt.Decide(request.GetParamsObject(), _confirmEachRun, _logger)
+                    == ConfirmationDecision.Declined)
+                {
+                    return CreateErrorResponse(request.Id,
+                        ConfirmationPrompt.DeclinedErrorCode,
+                        ConfirmationPrompt.DeclinedMessage);
                 }
 
                 try

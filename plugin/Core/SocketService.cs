@@ -27,6 +27,7 @@ namespace revit_mcp_plugin.Core
         private CommandExecutor _commandExecutor;
         private string _authToken;
         private bool _tokenWarningLogged;
+        private bool _confirmEachRun = true;
 
         public static SocketService Instance
         {
@@ -82,6 +83,12 @@ namespace revit_mcp_plugin.Core
             // 读取预共享鉴权 token（可选增强，缺失时向后兼容放行）
             // Read the pre-shared auth token (optional; missing token stays backward compatible).
             _authToken = configManager.Config?.Settings?.Token;
+            _confirmEachRun = configManager.Config?.Settings?.ConfirmEachRun ?? true;
+
+            // 确认对话框的外部事件必须在 Revit UI 线程上创建（Initialize 由 Ribbon 点击触发）。
+            // The confirmation dialog's external event has to be created on the Revit UI
+            // thread; Initialize() runs from the ribbon click.
+            ConfirmationPrompt.Initialize();
 
 
             // 从配置中读取服务端口（缺省仍为字段默认值 18080）
@@ -297,6 +304,19 @@ namespace revit_mcp_plugin.Core
                 }
 
                 // 执行命令
+                // 逐次确认：服务器给即席代码的请求加 confirm 参数，设备侧弹窗询问设计师。
+                // 能力包、探针、读取不带 confirm，不弹窗。
+                // Per-run confirmation: the server marks ad-hoc code requests with a
+                // confirm object and the device asks the designer. Capability packs,
+                // probes and reads carry no confirm and never prompt.
+                if (ConfirmationPrompt.Decide(request.GetParamsObject(), _confirmEachRun, _logger)
+                    == ConfirmationDecision.Declined)
+                {
+                    return CreateErrorResponse(request.Id,
+                        ConfirmationPrompt.DeclinedErrorCode,
+                        ConfirmationPrompt.DeclinedMessage);
+                }
+
                 // Execute command.
                 try
                 {                
