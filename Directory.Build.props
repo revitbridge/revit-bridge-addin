@@ -1,0 +1,10 @@
+<Project>
+  <!-- Shared by plugin\ and commandset\. Keep this file ASCII only. -->
+  <PropertyGroup>
+    <!-- Same inputs -> same IL and MVID. Requires fixed assembly versions (no 1.0.* wildcards). -->
+    <Deterministic>true</Deterministic>
+    <!-- CI only: maps source paths in the PDBs to /_/ so the output does not depend on the
+         checkout directory. Left off locally so PDBs keep real paths for debugging. -->
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+  </PropertyGroup>
+</Project>

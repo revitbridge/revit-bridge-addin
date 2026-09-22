@@ -29,11 +29,22 @@ jobs:
         with:
           global-json-file: global.json
 
+      # Directory.Build.props turns on Deterministic + ContinuousIntegrationBuild
+      # when GITHUB_ACTIONS=true, so these are the same commands as a local build.
       - name: Build plugin
         run: dotnet build plugin -c "${{ env.REVIT_CONFIG }}"
 
       - name: Build command set
         run: dotnet build commandset -c "${{ env.REVIT_CONFIG }}"
+
+      - name: Assembly hashes (deterministic build check, compare across runs)
+        shell: pwsh
+        run: |
+          $addinDir = Join-Path $env:ADDIN_OUTPUT "revit-bridge"
+          Get-FileHash -Algorithm SHA256 -Path @(
+            (Join-Path $addinDir "RevitMCPPlugin.dll"),
+            (Join-Path $addinDir "Commands\RevitMCPCommandSet\2026\RevitMCPCommandSet.dll")
+          ) | Format-Table Hash, Path -AutoSize
 
       - name: Sign assemblies (only when a signing certificate is configured)
         if: env.SIGNING_PFX_BASE64 != ''

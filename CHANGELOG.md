@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- Reproducible CI build: `Directory.Build.props` sets `Deterministic` and, on GitHub Actions only, `ContinuousIntegrationBuild` (source paths mapped to `/_/`); the workflow prints the SHA-256 of both assemblies so runs can be compared. Local builds keep real paths in the PDB.
+
 ## 0.1.1 (2026-09-17)
 
 - No built-in WebSocket server URL: `wsUrl` comes only from `commandRegistry.json` (installer `-Server` or the Settings page). The Settings page no longer pre-fills a host; the switch shows a message instead of connecting when `wsUrl` is empty in `websocket` mode.
