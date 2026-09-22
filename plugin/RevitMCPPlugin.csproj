@@ -74,6 +74,10 @@
     <ItemGroup>
         <PackageReference Include="Newtonsoft.Json" Version="13.0.3"/>
     </ItemGroup>
+    <ItemGroup Condition="'$(TargetFramework)' == 'net48'">
+        <!-- PairingClient uses HttpClient; not in the default reference set on .NET Framework. -->
+        <Reference Include="System.Net.Http"/>
+    </ItemGroup>
     <ItemGroup>
         <None Update="revit-bridge.addin">
             <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

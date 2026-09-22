@@ -56,25 +56,51 @@
                     BorderBrush="#e0e0e0" BorderThickness="1" CornerRadius="4"
                     Margin="0,0,0,15" Visibility="Collapsed">
                 <StackPanel>
-                    <TextBlock Text="WebSocket Settings" FontWeight="SemiBold" Margin="0,0,0,10"/>
-                    <Grid Margin="0,0,0,10">
+                    <TextBlock Text="Pair with a bridge server" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                    <TextBlock Foreground="#666666" TextWrapping="Wrap" Margin="0,0,0,10"
+                               Text="On the site click 'Pair a Revit', then enter the site address and the code here. The server answers with this device's id, token and WebSocket URL."/>
+                    <Grid Margin="0,0,0,8">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="80"/>
+                            <ColumnDefinition Width="100"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
-                        <TextBlock Text="Server URL:" VerticalAlignment="Center"/>
-                        <TextBox x:Name="WsUrlTextBox" Grid.Column="1"
-                                 Text="" Padding="5,3"
-                                 ToolTip="wss://&lt;host&gt;/api/v1/bridge/ws - stored in Commands\commandRegistry.json"/>
+                        <TextBlock Text="Server:" VerticalAlignment="Center"/>
+                        <TextBox x:Name="ServerTextBox" Grid.Column="1" Text="" Padding="5,3"
+                                 ToolTip="Site address, e.g. https://bridge.example.com (not the wss:// URL)"/>
                     </Grid>
-                    <Grid Margin="0,0,0,10">
+                    <Grid Margin="0,0,0,8">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="80"/>
+                            <ColumnDefinition Width="100"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Pairing code:" VerticalAlignment="Center"/>
+                        <TextBox x:Name="PairCodeTextBox" Grid.Column="1" Text="" Padding="5,3"
+                                 Width="120" HorizontalAlignment="Left" CharacterCasing="Upper"
+                                 ToolTip="XXXX-XXXX, valid for 10 minutes, single use"/>
+                        <Button x:Name="PairButton" Grid.Column="2" Content="Pair" Width="70" Height="26"
+                                Click="PairButton_Click"/>
+                    </Grid>
+                    <TextBlock x:Name="PairStatusText" Text="" Foreground="#666" TextWrapping="Wrap"
+                               Margin="100,0,0,10"/>
+                    <Grid Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="100"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
                         <TextBlock Text="Device:" VerticalAlignment="Center"/>
                         <TextBlock x:Name="DeviceText" Grid.Column="1" Text="Not paired"
                                    VerticalAlignment="Center" Foreground="#666"/>
+                    </Grid>
+                    <Grid Margin="0,0,0,10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="100"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="WebSocket URL:" VerticalAlignment="Center"/>
+                        <TextBox x:Name="WsUrlTextBox" Grid.Column="1" Text="" Padding="5,3"
+                                 IsReadOnly="True" Background="#f0f0f0"
+                                 ToolTip="Returned by the server when pairing; stored in Commands\commandRegistry.json as wsUrl"/>
                     </Grid>
                     <CheckBox x:Name="ConfirmEachRunCheckBox" IsChecked="True"
                               Content="Ask before each ad-hoc code run (recommended)"
