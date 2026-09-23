@@ -30,31 +30,11 @@ namespace revit_mcp_plugin.UI
             Unloaded += (_, _) => _statusTimer.Stop();
         }
 
-        // ── Config file access ─────────────────────────────────────────
-
-        private static FrameworkConfig LoadConfig()
-        {
-            string configPath = PathManager.GetCommandRegistryFilePath();
-            if (File.Exists(configPath))
-            {
-                string json = File.ReadAllText(configPath);
-                return JsonConvert.DeserializeObject<FrameworkConfig>(json) ?? new FrameworkConfig();
-            }
-            return new FrameworkConfig();
-        }
-
-        private static void SaveConfig(FrameworkConfig config)
-        {
-            string configPath = PathManager.GetCommandRegistryFilePath();
-            string output = JsonConvert.SerializeObject(config, Formatting.Indented);
-            File.WriteAllText(configPath, output);
-        }
-
         private void LoadSettings()
         {
             try
             {
-                var s = LoadConfig().Settings ?? new ServiceSettings();
+                var s = SettingsStore.Load().Settings ?? new ServiceSettings();
 
                 PortTextBox.Text = s.Port.ToString();
                 WsUrlTextBox.Text = s.WsUrl ?? "";
@@ -136,19 +116,22 @@ namespace revit_mcp_plugin.UI
 
                 // Only a successful reply touches the config: deviceId, token and the
                 // server-supplied wsUrl. Mode follows, since pairing is the remote setup.
-                var config = LoadConfig();
+                // Pairing is also the authorisation to run ad-hoc code here; each run
+                // still asks while confirmEachRun is on. Unpair() and close 4003 undo it.
+                var config = SettingsStore.Load();
                 config.Settings.DeviceId = result.DeviceId;
                 config.Settings.Token = result.DeviceToken;
                 config.Settings.WsUrl = result.WsUrl;
                 config.Settings.Mode = "websocket";
-                SaveConfig(config);
+                config.Settings.AllowRemoteCodeExecution = true;
+                SettingsStore.Save(config);
 
                 WsUrlTextBox.Text = result.WsUrl;
                 PairCodeTextBox.Text = "";
                 ShowDevice(config.Settings);
                 PairStatusText.Text = WebSocketService.Instance.IsRunning
-                    ? $"Paired as {result.DeviceId}. Click 'Revit MCP Switch' twice (stop, start) to reconnect as this device."
-                    : $"Paired as {result.DeviceId}. Click 'Revit MCP Switch' to connect.";
+                    ? $"Paired as {result.DeviceId}; remote code execution allowed. Click 'Revit MCP Switch' twice (stop, start) to reconnect as this device."
+                    : $"Paired as {result.DeviceId}; remote code execution allowed. Click 'Revit MCP Switch' to connect.";
             }
             catch (PairingException ex)
             {
@@ -162,6 +145,36 @@ namespace revit_mcp_plugin.UI
             finally
             {
                 PairButton.IsEnabled = true;
+            }
+        }
+
+        private void UnpairButton_Click(object sender, RoutedEventArgs e)
+        {
+            var confirm = MessageBox.Show(
+                "Forget this device's pairing?\n\nThe device id, token and server URL are cleared and " +
+                "remote code execution is switched off. You will need a new pairing code to connect again.",
+                "Unpair", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No);
+            if (confirm != MessageBoxResult.Yes) return;
+
+            try
+            {
+                var config = SettingsStore.Load();
+                config.Settings.DeviceId = "";
+                config.Settings.Token = "";
+                config.Settings.WsUrl = "";
+                config.Settings.AllowRemoteCodeExecution = false;
+                SettingsStore.Save(config);
+
+                if (WebSocketService.Instance.IsRunning)
+                    WebSocketService.Instance.Stop();
+
+                WsUrlTextBox.Text = "";
+                ShowDevice(config.Settings);
+                PairStatusText.Text = "Unpaired. Remote code execution is off.";
+            }
+            catch (Exception ex)
+            {
+                PairStatusText.Text = $"Could not unpair: {ex.Message}";
             }
         }
 
@@ -205,7 +218,7 @@ namespace revit_mcp_plugin.UI
         {
             try
             {
-                var config = LoadConfig();
+                var config = SettingsStore.Load();
 
                 config.Settings.Mode = WsRadio.IsChecked == true ? "websocket" : "tcp";
 
@@ -215,7 +228,7 @@ namespace revit_mcp_plugin.UI
 
                 config.Settings.ConfirmEachRun = ConfirmEachRunCheckBox.IsChecked == true;
 
-                SaveConfig(config);
+                SettingsStore.Save(config);
 
                 MessageBox.Show("Settings saved.\nRestart the connection for changes to take effect.",
                     "Settings", MessageBoxButton.OK, MessageBoxImage.Information);

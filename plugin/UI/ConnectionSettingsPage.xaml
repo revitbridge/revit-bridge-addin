@@ -78,9 +78,16 @@
                         <TextBox x:Name="PairCodeTextBox" Grid.Column="1" Text="" Padding="5,3"
                                  Width="120" HorizontalAlignment="Left" CharacterCasing="Upper"
                                  ToolTip="XXXX-XXXX, valid for 10 minutes, single use"/>
-                        <Button x:Name="PairButton" Grid.Column="2" Content="Pair" Width="70" Height="26"
-                                Click="PairButton_Click"/>
+                        <StackPanel Grid.Column="2" Orientation="Horizontal">
+                            <Button x:Name="PairButton" Content="Pair" Width="70" Height="26"
+                                    Click="PairButton_Click"/>
+                            <Button x:Name="UnpairButton" Content="Unpair" Width="70" Height="26"
+                                    Margin="8,0,0,0" Click="UnpairButton_Click"
+                                    ToolTip="Forget this device's pairing and stop allowing remote code execution"/>
+                        </StackPanel>
                     </Grid>
+                    <TextBlock Foreground="#666666" TextWrapping="Wrap" Margin="100,0,0,8"
+                               Text="Pairing also allows the paired server to run ad-hoc code here (allowRemoteCodeExecution). Each run still asks first while the checkbox below is ticked. Unpairing, or the server revoking this device, turns it off again."/>
                     <TextBlock x:Name="PairStatusText" Text="" Foreground="#666" TextWrapping="Wrap"
                                Margin="100,0,0,10"/>
                     <Grid Margin="0,0,0,8">

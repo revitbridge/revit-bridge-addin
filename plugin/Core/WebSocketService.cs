@@ -345,6 +345,14 @@ namespace revit_mcp_plugin.Core
                 _logger.Warning(
                     "服务器拒绝本设备（未配对/已吊销）/ Server refused this device (unpaired or revoked){0}",
                     detail);
+
+                // 配对即授权远程执行代码；服务器不再认这台设备时收回该授权，
+                // 内存与配置一起改，重新配对才会再打开。
+                // Pairing is what authorises remote code execution here, so withdraw it
+                // when the server no longer accepts this device: in memory and on disk.
+                // Pairing again switches it back on.
+                _allowRemoteCodeExecution = false;
+                SettingsStore.Update(s => s.AllowRemoteCodeExecution = false, _logger);
                 return;
             }
 

@@ -24,6 +24,8 @@ Remote mode (Revit connects out to a bridge server; nothing is exposed on your m
 
 The installer redeems the code at `<host>/api/v1/bridge/devices/redeem` and stores the device id, device token and WebSocket URL the server returns. Codes are single use and expire after 10 minutes. You can also install without `-Pair` and enter the code later under **Settings > Connection**.
 
+Pairing is what authorises that server to run ad-hoc code here, so it switches `allowRemoteCodeExecution` on; every such run still asks in Revit first (see [Use](#use)). To pair without it, add `-AllowRemoteCode:$false`. **Unpair** in the Settings window - or the server revoking this device - switches it back off.
+
 The installer downloads the latest [Release](https://github.com/revitbridge/revit-bridge-addin/releases), verifies it against `SHA256SUMS.txt`, backs up any previous install to `revit-bridge.backup-<timestamp>`, and writes the connection settings. Revit shows an "unsigned add-in" prompt on first load: releases are not code-signed yet (see [Signing](#signing)).
 
 Installer parameters:
@@ -33,7 +35,7 @@ Installer parameters:
 | `-Mode local\|remote` | `local` | TCP on localhost, or outbound WebSocket to `-Server` |
 | `-Server <https url>` | | Site address of the bridge server, required for `remote` (not the `wss://` URL) |
 | `-Pair XXXX-XXXX` | | Pairing code from the site (`remote`); omitted, an existing pairing is kept |
-| `-AllowRemoteCode` | off | Remote mode: allow `send_code_to_revit` / `manage_solidified_tools` (rejected otherwise) |
+| `-AllowRemoteCode` | on with `-Pair` | Allow `send_code_to_revit` / `manage_solidified_tools` from the paired server. Pairing switches it on; pass `-AllowRemoteCode:$false` to pair without it. Without `-Pair`, the previous setting is kept |
 | `-Source release\|<dir>` | `release` | Install from GitHub Releases, or from a local directory (see [Build](#build)) |
 | `-RevitVersion` | `2026` | Target Revit year |
 | `-Repo`, `-Tag` | `revitbridge/revit-bridge-addin`, `latest` | Where to download from (forks point at their own repo) |
@@ -50,7 +52,7 @@ Manual install: unzip the release into `%APPDATA%\Autodesk\Revit\Addins\2026\` s
 
 Ad-hoc code runs ask first: when the server marks a request for confirmation, Revit shows a Yes/No dialog with what is about to run, defaulting to No, and No answers the caller with `declined on device`. Capability packs, probes and reads never prompt. Turn the dialog off with the `confirmEachRun` checkbox if a run is unattended - the server's own confirmation step still applies.
 
-In remote mode, `send_code_to_revit` and `manage_solidified_tools` are rejected unless `allowRemoteCodeExecution` is `true` (`-AllowRemoteCode`). Keep it off outside a dedicated test model. Local mode is not gated by this flag; the local MCP server's own confirmation step (`spec_confirmed`) applies instead.
+In remote mode, `send_code_to_revit` and `manage_solidified_tools` are rejected unless `allowRemoteCodeExecution` is `true`. Pairing switches it on and unpairing (or the server revoking the device) switches it off, so it follows the trust you granted rather than being a separate step. Local mode is not gated by this flag; the local MCP server's own confirmation step (`spec_confirmed`) applies instead.
 
 Logs: `%APPDATA%\Autodesk\Revit\Addins\2026\revit-bridge\Logs\mcp_YYYYMMDD.log`.
 
@@ -100,7 +102,7 @@ Settings live in `<addin folder>\Commands\commandRegistry.json` under `settings`
 | `deviceId` | `""` | This installation's device id, assigned when a pairing code is redeemed. Empty = not paired |
 | `token` | `""` | Device token from the same reply, sent in the auth handshake. In local mode it is the optional pre-shared token instead |
 | `confirmEachRun` | `true` | Show the Yes/No dialog for ad-hoc code runs the server marks for confirmation |
-| `allowRemoteCodeExecution` | `false` | Remote mode only: allow `send_code_to_revit` and `manage_solidified_tools`; rejected with an error when `false` |
+| `allowRemoteCodeExecution` | `false` until paired | Remote mode only: allow `send_code_to_revit` and `manage_solidified_tools`; rejected with an error when `false`. Set by pairing, cleared by unpairing or by the server revoking this device |
 
 The `commands` array in the same file registers the 24 built-in commands from `RevitMCPCommandSet`; `command.json` next to the DLL holds their parameter schemas.
 

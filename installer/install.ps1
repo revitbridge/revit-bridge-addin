@@ -42,8 +42,13 @@
     from a previous install, or pair later in Settings > Connection.
 
 .PARAMETER AllowRemoteCode
-    Remote mode: allow send_code_to_revit and manage_solidified_tools. When
-    off (default) the add-in rejects those methods.
+    Remote mode: allow send_code_to_revit and manage_solidified_tools.
+    Pairing with -Pair switches this on, because pairing is the act of
+    authorising that server; each ad-hoc run still asks in Revit while
+    confirmEachRun is on. Pass -AllowRemoteCode:$false together with -Pair to
+    pair without it. Without -Pair the previous setting is kept, or off for a
+    fresh install. Unpairing in Settings, or the server revoking the device,
+    switches it off again.
 
 .PARAMETER RevitVersion
     Revit year to install into. Default 2026 (the only version the official
@@ -330,6 +335,7 @@ $existingWsUrl = ""
 $existingToken = ""
 $existingDeviceId = ""
 $existingConfirmEachRun = $true
+$existingAllowRemoteCode = $false
 if ($null -ne $previousRegistry) {
     try {
         $previous = Get-Content -LiteralPath $previousRegistry -Raw | ConvertFrom-Json
@@ -338,6 +344,7 @@ if ($null -ne $previousRegistry) {
             if ($null -ne $previous.settings.deviceId) { $existingDeviceId = [string]$previous.settings.deviceId }
             if ($null -ne $previous.settings.wsUrl) { $existingWsUrl = [string]$previous.settings.wsUrl }
             if ($null -ne $previous.settings.confirmEachRun) { $existingConfirmEachRun = [bool]$previous.settings.confirmEachRun }
+            if ($null -ne $previous.settings.allowRemoteCodeExecution) { $existingAllowRemoteCode = [bool]$previous.settings.allowRemoteCodeExecution }
         }
     } catch {
         Write-Warning "Could not read settings from the previous install: $($_.Exception.Message)"
@@ -367,6 +374,19 @@ if ($Mode -eq "remote") {
     $modeValue = "tcp"
 }
 
+# Pairing is what authorises a server to run ad-hoc code on this machine, so
+# -Pair switches allowRemoteCodeExecution on unless the caller said otherwise.
+# An update without -Pair keeps whatever the previous install had.
+# ($effective... rather than $allowRemoteCode: PowerShell variable names are
+# case-insensitive, so that name would be the -AllowRemoteCode parameter itself.)
+if ($PSBoundParameters.ContainsKey("AllowRemoteCode")) {
+    $effectiveAllowRemoteCode = [bool]$AllowRemoteCode
+} elseif (-not [string]::IsNullOrWhiteSpace($Pair)) {
+    $effectiveAllowRemoteCode = $true
+} else {
+    $effectiveAllowRemoteCode = $existingAllowRemoteCode
+}
+
 $settings = [pscustomobject]@{
     logLevel = "Info"
     port = 18080
@@ -375,7 +395,7 @@ $settings = [pscustomobject]@{
     deviceId = $deviceId
     token = $effectiveToken
     confirmEachRun = $existingConfirmEachRun
-    allowRemoteCodeExecution = [bool]$AllowRemoteCode
+    allowRemoteCodeExecution = $effectiveAllowRemoteCode
 }
 
 if ($null -eq $config.settings) {
@@ -429,7 +449,7 @@ if ($Mode -eq "remote") {
     Write-Host "TCP endpoint:        127.0.0.1:18080"
 }
 Write-Host "Confirm each run:    $existingConfirmEachRun"
-Write-Host "Remote code allowed: $([bool]$AllowRemoteCode)"
+Write-Host "Remote code allowed: $effectiveAllowRemoteCode"
 Write-Host "RevitMCPPlugin.dll SHA-256:     $(Get-FileSha256 $mainDllDestination)"
 Write-Host "RevitMCPCommandSet.dll SHA-256: $(Get-FileSha256 $commandDllDestination)"
 if ($otherManifests.Count -gt 0) {
