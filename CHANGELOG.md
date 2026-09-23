@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- Pairing replaces slots: `-Mode remote -Server https://<host> -Pair XXXX-XXXX` redeems the code at `/api/v1/bridge/devices/redeem` and stores `deviceId`, `token` and the `wsUrl` the server returns; **`-Slot` and `-Token` are gone**. The Settings window does the same from a pairing-code field. A 0.1.x config still loads and counts as not paired.
+- The WebSocket handshake always sends `{"type":"auth","device_id","token"}` to `<wsUrl>/<deviceId>`. Close 4003 (unpaired or revoked) stops reconnecting and shows that state on the ribbon switch and in the Settings window; close 4002 keeps the retry.
+- Ad-hoc code runs the server marks with a `confirm` object show a Yes/No dialog in Revit (default No, body cut at 2000 characters) before running; No answers `-32001 "declined on device"`. Capability packs, probes and reads never prompt. The `confirmEachRun` setting (default on) turns the dialog off.
+
 - Reproducible CI build: `Directory.Build.props` sets `Deterministic` and, on GitHub Actions only, `ContinuousIntegrationBuild` (source paths mapped to `/_/`); the workflow prints the SHA-256 of both assemblies so runs can be compared. Local builds keep real paths in the PDB.
 - `commandset` builds with 0 warnings: `GeometryUtils.FindIntersection` uses `Curve.Intersect(Curve, CurveIntersectResultOption.Detailed)` on Revit 2026 (old overload kept for older configurations), an unused `catch` variable is dropped, and the meaningless `System.Net.Http` reference (net8) is removed.
 

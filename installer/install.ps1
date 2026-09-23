@@ -8,13 +8,13 @@
     %APPDATA%\Autodesk\Revit\Addins\<RevitVersion>\ and writes the connection
     settings into Commands\commandRegistry.json.
 
-    One-line install (local TCP mode, no token needed):
+    One-line install (local TCP mode, nothing to configure):
 
         irm https://raw.githubusercontent.com/revitbridge/revit-bridge-addin/main/installer/install.ps1 | iex
 
-    With parameters (remote mode):
+    With parameters (remote mode): get a pairing code from the site first.
 
-        & ([scriptblock]::Create((irm https://raw.githubusercontent.com/revitbridge/revit-bridge-addin/main/installer/install.ps1))) -Mode remote -Server wss://example.com/api/v1/bridge/ws -Slot 1
+        & ([scriptblock]::Create((irm https://raw.githubusercontent.com/revitbridge/revit-bridge-addin/main/installer/install.ps1))) -Mode remote -Server https://example.com -Pair XXXX-XXXX
 
     From a local build:
 
@@ -25,20 +25,21 @@
     remote - Revit connects out to a WebSocket bridge server (-Server required).
 
 .PARAMETER Server
-    WebSocket base URL of the bridge server, e.g. wss://host/api/v1/bridge/ws.
-    Remote mode only.
+    Site address of the bridge server, e.g. https://bridge.example.com.
+    Remote mode only. The WebSocket URL is whatever the server returns when
+    the pairing code is redeemed; it is never assembled here.
 
 .PARAMETER Source
     "release" (default): download the release zip from GitHub and verify it
     against SHA256SUMS.txt. Otherwise a local directory: an extracted release
     zip or a build output such as "plugin\bin\AddIn 2026 Release R26".
 
-.PARAMETER Slot
-    Slot number (1-5) on the bridge server. Remote mode only. Default 1.
-
-.PARAMETER Token
-    Optional slot token for remote mode. When omitted, a token from a previous
-    install is kept. Pairing codes replace this in a later release.
+.PARAMETER Pair
+    Pairing code from the site, in the form XXXX-XXXX. Remote mode only.
+    The installer redeems it at <Server>/api/v1/bridge/devices/redeem and
+    stores the device id, device token and WebSocket URL it gets back. Codes
+    are single use and expire after 10 minutes. Omit it to keep the pairing
+    from a previous install, or pair later in Settings > Connection.
 
 .PARAMETER AllowRemoteCode
     Remote mode: allow send_code_to_revit and manage_solidified_tools. When
@@ -61,9 +62,7 @@ param(
     [string]$Mode = "local",
     [string]$Server = "",
     [string]$Source = "release",
-    [ValidatePattern('^[1-5]$')]
-    [string]$Slot = "1",
-    [string]$Token = "",
+    [string]$Pair = "",
     [switch]$AllowRemoteCode,
     [ValidatePattern('^20\d\d$')]
     [string]$RevitVersion = "2026",
@@ -180,6 +179,58 @@ function Resolve-SourceLayout {
     }
 }
 
+function Invoke-PairingRedeem {
+    param([string]$Server, [string]$Code)
+
+    try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
+
+    $url = $Server.TrimEnd('/') + "/api/v1/bridge/devices/redeem"
+    $body = @{ code = $Code; addin_version = "installer" } | ConvertTo-Json -Compress
+
+    Write-Host "Redeeming pairing code at $url"
+    try {
+        $reply = Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType "application/json" -Headers @{ "User-Agent" = $userAgent }
+    } catch {
+        $response = $_.Exception.Response
+        $status = $null
+        if ($null -ne $response) { $status = [int]$response.StatusCode }
+        $detail = ""
+        try {
+            if ($null -ne $response) {
+                $reader = New-Object IO.StreamReader($response.GetResponseStream())
+                $text = $reader.ReadToEnd()
+                $reader.Close()
+                if ($text) {
+                    $parsed = $text | ConvertFrom-Json
+                    if ($null -ne $parsed.message) { $detail = [string]$parsed.message }
+                    elseif ($null -ne $parsed.error) { $detail = [string]$parsed.error }
+                }
+            }
+        } catch { }
+
+        if ($status -eq 404) {
+            throw "Pairing code $Code was refused (invalid, already used, or expired). Generate a new one on the site. $detail".Trim()
+        }
+        throw "Could not redeem the pairing code at $url : $($_.Exception.Message) $detail".Trim()
+    }
+
+    if ([string]::IsNullOrWhiteSpace($reply.device_id) -or
+        [string]::IsNullOrWhiteSpace($reply.device_token) -or
+        [string]::IsNullOrWhiteSpace($reply.ws_url)) {
+        throw "The server reply is missing device_id, device_token or ws_url."
+    }
+    if ([string]$reply.ws_url -notmatch '^wss?://') {
+        throw "The server returned an unexpected ws_url: $($reply.ws_url)"
+    }
+
+    Write-Host "Paired as $($reply.device_id)"
+    return [pscustomobject]@{
+        DeviceId = [string]$reply.device_id
+        Token    = [string]$reply.device_token
+        WsUrl    = ([string]$reply.ws_url).TrimEnd('/')
+    }
+}
+
 function Get-FileSha256 {
     param([string]$Path)
     if (Test-Path -LiteralPath $Path) {
@@ -194,10 +245,26 @@ function Get-FileSha256 {
 
 if ($Mode -eq "remote") {
     if ([string]::IsNullOrWhiteSpace($Server)) {
-        throw "-Server is required in remote mode, e.g. -Server wss://host/api/v1/bridge/ws"
+        throw "-Server is required in remote mode, e.g. -Server https://bridge.example.com"
     }
-    if ($Server -notmatch '^wss?://') {
-        throw "-Server must start with ws:// or wss://"
+    if ($Server -match '^wss?://') {
+        throw "-Server is the site address (https://host), not the WebSocket URL. The server returns the WebSocket URL when the pairing code is redeemed."
+    }
+    if ($Server -notmatch '^https://' -and $Server -notmatch '^http://(localhost|127\.0\.0\.1)(:\d+)?/?$') {
+        throw "-Server must start with https:// (http:// is only allowed for localhost)."
+    }
+}
+
+if (-not [string]::IsNullOrWhiteSpace($Pair)) {
+    if ($Mode -ne "remote") {
+        throw "-Pair only applies to -Mode remote."
+    }
+    $Pair = $Pair.Trim().ToUpperInvariant()
+    if ($Pair -match '^[A-Z0-9]{8}$') {
+        $Pair = $Pair.Substring(0, 4) + "-" + $Pair.Substring(4)
+    }
+    if ($Pair -notmatch '^[A-Z0-9]{4}-[A-Z0-9]{4}$') {
+        throw "-Pair must be a pairing code in the form XXXX-XXXX."
     }
 }
 
@@ -257,38 +324,41 @@ Copy-Item -LiteralPath $layout.Manifest.FullName -Destination $addinDestination 
 $registryDestination = Join-Path $pluginDestination "Commands\commandRegistry.json"
 $config = Get-Content -LiteralPath $registryDestination -Raw | ConvertFrom-Json
 
+# Carry the previous pairing over an update: deviceId, token and wsUrl belong
+# to this machine, not to the package.
 $existingWsUrl = ""
 $existingToken = ""
-if ($null -ne $config.settings) {
-    if ($null -ne $config.settings.wsUrl) { $existingWsUrl = [string]$config.settings.wsUrl }
-}
+$existingDeviceId = ""
+$existingConfirmEachRun = $true
 if ($null -ne $previousRegistry) {
     try {
         $previous = Get-Content -LiteralPath $previousRegistry -Raw | ConvertFrom-Json
         if ($null -ne $previous.settings) {
             if ($null -ne $previous.settings.token) { $existingToken = [string]$previous.settings.token }
-            if ($Mode -eq "local" -and $null -ne $previous.settings.wsUrl -and -not [string]::IsNullOrWhiteSpace($previous.settings.wsUrl)) {
-                $existingWsUrl = [string]$previous.settings.wsUrl
-            }
+            if ($null -ne $previous.settings.deviceId) { $existingDeviceId = [string]$previous.settings.deviceId }
+            if ($null -ne $previous.settings.wsUrl) { $existingWsUrl = [string]$previous.settings.wsUrl }
+            if ($null -ne $previous.settings.confirmEachRun) { $existingConfirmEachRun = [bool]$previous.settings.confirmEachRun }
         }
     } catch {
         Write-Warning "Could not read settings from the previous install: $($_.Exception.Message)"
     }
 }
 
-if ($Mode -eq "remote") {
-    $wsUrl = $Server.TrimEnd('/')
-} else {
-    $wsUrl = $existingWsUrl
-}
+$wsUrl = $existingWsUrl
+$deviceId = $existingDeviceId
+$effectiveToken = $existingToken
 
-$effectiveToken = $Token
-if ([string]::IsNullOrWhiteSpace($effectiveToken) -and -not [string]::IsNullOrWhiteSpace($existingToken)) {
-    $effectiveToken = $existingToken
-    Write-Host "Kept slot token from the previous install."
-}
-if ($Mode -eq "remote" -and [string]::IsNullOrWhiteSpace($effectiveToken)) {
-    Write-Warning "No slot token configured. Servers that require a token will reject the connection; re-run with -Token <value>."
+if (-not [string]::IsNullOrWhiteSpace($Pair)) {
+    $paired = Invoke-PairingRedeem -Server $Server -Code $Pair
+    $deviceId = $paired.DeviceId
+    $effectiveToken = $paired.Token
+    $wsUrl = $paired.WsUrl
+} elseif ($Mode -eq "remote") {
+    if ([string]::IsNullOrWhiteSpace($deviceId) -or [string]::IsNullOrWhiteSpace($wsUrl)) {
+        Write-Warning "This Revit is not paired yet. Re-run with -Pair XXXX-XXXX, or enter a pairing code in Settings > Connection."
+    } else {
+        Write-Host "Kept the pairing from the previous install ($deviceId)."
+    }
 }
 
 if ($Mode -eq "remote") {
@@ -302,8 +372,9 @@ $settings = [pscustomobject]@{
     port = 18080
     mode = $modeValue
     wsUrl = $wsUrl
-    slotId = $Slot
+    deviceId = $deviceId
     token = $effectiveToken
+    confirmEachRun = $existingConfirmEachRun
     allowRemoteCodeExecution = [bool]$AllowRemoteCode
 }
 
@@ -348,10 +419,16 @@ Write-Host "Manifest:            $addinDestination"
 Write-Host "Source:              $sourceLabel"
 Write-Host "Mode:                $Mode"
 if ($Mode -eq "remote") {
-    Write-Host "Server:              $wsUrl (slot $Slot)"
+    if ([string]::IsNullOrWhiteSpace($deviceId)) {
+        Write-Host "Server:              $Server (not paired yet)"
+    } else {
+        Write-Host "Server:              $wsUrl"
+        Write-Host "Device:              $deviceId"
+    }
 } else {
     Write-Host "TCP endpoint:        127.0.0.1:18080"
 }
+Write-Host "Confirm each run:    $existingConfirmEachRun"
 Write-Host "Remote code allowed: $([bool]$AllowRemoteCode)"
 Write-Host "RevitMCPPlugin.dll SHA-256:     $(Get-FileSha256 $mainDllDestination)"
 Write-Host "RevitMCPCommandSet.dll SHA-256: $(Get-FileSha256 $commandDllDestination)"

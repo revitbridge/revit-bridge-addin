@@ -16,11 +16,13 @@ One line, local mode (Revit listens on `127.0.0.1:18080`, no token needed):
 irm https://raw.githubusercontent.com/revitbridge/revit-bridge-addin/main/installer/install.ps1 | iex
 ```
 
-Remote mode (Revit connects out to a bridge server; nothing is exposed on your machine):
+Remote mode (Revit connects out to a bridge server; nothing is exposed on your machine). Click "Pair a Revit" on the site first to get a pairing code:
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/revitbridge/revit-bridge-addin/main/installer/install.ps1))) -Mode remote -Server wss://<host>/api/v1/bridge/ws -Slot 1
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/revitbridge/revit-bridge-addin/main/installer/install.ps1))) -Mode remote -Server https://<host> -Pair XXXX-XXXX
 ```
+
+The installer redeems the code at `<host>/api/v1/bridge/devices/redeem` and stores the device id, device token and WebSocket URL the server returns. Codes are single use and expire after 10 minutes. You can also install without `-Pair` and enter the code later under **Settings > Connection**.
 
 The installer downloads the latest [Release](https://github.com/revitbridge/revit-bridge-addin/releases), verifies it against `SHA256SUMS.txt`, backs up any previous install to `revit-bridge.backup-<timestamp>`, and writes the connection settings. Revit shows an "unsigned add-in" prompt on first load: releases are not code-signed yet (see [Signing](#signing)).
 
@@ -29,9 +31,8 @@ Installer parameters:
 | Parameter | Default | Meaning |
 |---|---|---|
 | `-Mode local\|remote` | `local` | TCP on localhost, or outbound WebSocket to `-Server` |
-| `-Server <wss url>` | | Bridge server base URL, required for `remote` |
-| `-Slot 1..5` | `1` | Slot on the bridge server (`remote`) |
-| `-Token <value>` | | Optional slot token (`remote`); a token from a previous install is kept when omitted |
+| `-Server <https url>` | | Site address of the bridge server, required for `remote` (not the `wss://` URL) |
+| `-Pair XXXX-XXXX` | | Pairing code from the site (`remote`); omitted, an existing pairing is kept |
 | `-AllowRemoteCode` | off | Remote mode: allow `send_code_to_revit` / `manage_solidified_tools` (rejected otherwise) |
 | `-Source release\|<dir>` | `release` | Install from GitHub Releases, or from a local directory (see [Build](#build)) |
 | `-RevitVersion` | `2026` | Target Revit year |
@@ -45,9 +46,11 @@ Manual install: unzip the release into `%APPDATA%\Autodesk\Revit\Addins\2026\` s
 2. Click **Revit MCP Switch** to start (or stop) the service. **Settings** opens the connection page.
 3. Connect a client:
    - **Local mode**: run the MCP server on the same machine, e.g. `uvx revit-bridge` in Claude Desktop / Claude Code, and `revit-bridge check` to confirm the link. The add-in listens on TCP `127.0.0.1:18080` (JSON-RPC 2.0, loopback only).
-   - **Remote mode**: the add-in dials `wss://<host>/api/v1/bridge/ws/<slot>` on port 443, sends `User-Agent: RevitMCPPlugin/0.3` and, if configured, the slot token as the first message. Open the web host, pick the same slot, and paste the token there.
+   - **Remote mode**: the add-in dials `<wsUrl>/<deviceId>` on port 443 (the `wsUrl` the server returned when pairing) and sends `{"type":"auth","device_id":...,"token":...}` as the first message. The site then lists this Revit as online. Revoking the device on the site closes the connection (code 4003); the add-in stops reconnecting and shows "unpaired or revoked" until you pair again.
 
-In remote mode, `send_code_to_revit` and `manage_solidified_tools` are rejected unless `allowRemoteCodeExecution` is `true` (`-AllowRemoteCode`). Keep it off outside a dedicated test model. Local mode is not gated by this flag; the local MCP server's own confirmation step (`spec_confirmed`) applies instead. Per-call confirmation dialogs and pairing codes are planned for a later release.
+Ad-hoc code runs ask first: when the server marks a request for confirmation, Revit shows a Yes/No dialog with what is about to run, defaulting to No, and No answers the caller with `declined on device`. Capability packs, probes and reads never prompt. Turn the dialog off with the `confirmEachRun` checkbox if a run is unattended - the server's own confirmation step still applies.
+
+In remote mode, `send_code_to_revit` and `manage_solidified_tools` are rejected unless `allowRemoteCodeExecution` is `true` (`-AllowRemoteCode`). Keep it off outside a dedicated test model. Local mode is not gated by this flag; the local MCP server's own confirmation step (`spec_confirmed`) applies instead.
 
 Logs: `%APPDATA%\Autodesk\Revit\Addins\2026\revit-bridge\Logs\mcp_YYYYMMDD.log`.
 
@@ -93,9 +96,10 @@ Settings live in `<addin folder>\Commands\commandRegistry.json` under `settings`
 | `logLevel` | `"Info"` | Log verbosity |
 | `port` | `18080` | TCP port for local mode (bound to `127.0.0.1` only) |
 | `mode` | `"tcp"` | `"tcp"` (local) or `"websocket"` (remote) |
-| `wsUrl` | | Bridge server base URL for `websocket` mode, e.g. `wss://host/api/v1/bridge/ws` |
-| `slotId` | `"1"` | Slot `1`-`5` on the bridge server |
-| `token` | `""` | Optional pre-shared slot token, sent after the WebSocket handshake. Empty = not sent |
+| `wsUrl` | | WebSocket base URL, written by pairing (the server decides it); the add-in connects to `<wsUrl>/<deviceId>` |
+| `deviceId` | `""` | This installation's device id, assigned when a pairing code is redeemed. Empty = not paired |
+| `token` | `""` | Device token from the same reply, sent in the auth handshake. In local mode it is the optional pre-shared token instead |
+| `confirmEachRun` | `true` | Show the Yes/No dialog for ad-hoc code runs the server marks for confirmation |
 | `allowRemoteCodeExecution` | `false` | Remote mode only: allow `send_code_to_revit` and `manage_solidified_tools`; rejected with an error when `false` |
 
 The `commands` array in the same file registers the 24 built-in commands from `RevitMCPCommandSet`; `command.json` next to the DLL holds their parameter schemas.
