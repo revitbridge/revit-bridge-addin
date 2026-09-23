@@ -1,6 +1,7 @@
 ﻿using RevitMCPSDK.API.Interfaces;
 using System;
 using System.IO;
+using System.Text;
 
 namespace revit_mcp_plugin.Utils
 {
@@ -31,7 +32,13 @@ namespace revit_mcp_plugin.Utils
             // Write to the logfile.
             try
             {
-                File.AppendAllText(_logFilePath, logEntry + Environment.NewLine);
+                // 显式 UTF-8：内容本来就是 UTF-8，但没有 BOM 时 PowerShell 5.1 等按本地
+                // 代码页读取，中文显示为乱码。新文件带 BOM，已存在的文件只追加、不改写。
+                // Explicit UTF-8: the text already was UTF-8, but without a BOM
+                // PowerShell 5.1 and friends read it in the ANSI code page and show the
+                // Chinese as mojibake. New files get the BOM; existing files are only
+                // appended to, never rewritten.
+                File.AppendAllText(_logFilePath, logEntry + Environment.NewLine, Encoding.UTF8);
             }
             catch
             {

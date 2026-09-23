@@ -303,7 +303,6 @@ namespace revit_mcp_plugin.Core
                         $"Method '{request.Method}' not found");
                 }
 
-                // 执行命令
                 // 逐次确认：服务器给即席代码的请求加 confirm 参数，设备侧弹窗询问设计师。
                 // 能力包、探针、读取不带 confirm，不弹窗。
                 // Per-run confirmation: the server marks ad-hoc code requests with a
@@ -317,6 +316,7 @@ namespace revit_mcp_plugin.Core
                         ConfirmationPrompt.DeclinedMessage);
                 }
 
+                // 执行命令
                 // Execute command.
                 try
                 {                
