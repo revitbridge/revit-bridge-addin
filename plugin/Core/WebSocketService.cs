@@ -54,6 +54,9 @@ namespace revit_mcp_plugin.Core
 
         // 代码执行类高危方法白名单（默认关闭，除非配置显式允许）
         // Code-execution class of high-risk methods (disabled by default unless config allows).
+        // check_code_in_revit（只编译）与 get_bridge_capabilities（只读元数据）没有副作用，故意不在此列。
+        // check_code_in_revit (compile only) and get_bridge_capabilities (read-only metadata)
+        // have no side effects and are deliberately not listed here.
         private static readonly HashSet<string> CodeExecutionMethods = new HashSet<string>(StringComparer.Ordinal)
         {
             "send_code_to_revit",

@@ -1,6 +1,6 @@
 # revit-bridge-addin
 
-Revit add-in for [revit-bridge](https://github.com/revitbridge/revit-bridge). It exposes a small JSON-RPC surface (24 commands plus dynamic C# execution) that the `revit-bridge` MCP server or a [revit-bridge-web](https://github.com/revitbridge/revit-bridge-web) host drives.
+Revit add-in for [revit-bridge](https://github.com/revitbridge/revit-bridge). It exposes a small JSON-RPC surface (26 commands plus dynamic C# execution) that the `revit-bridge` MCP server or a [revit-bridge-web](https://github.com/revitbridge/revit-bridge-web) host drives.
 
 Revit 2026 插件：本地 TCP 或远程 WebSocket 两种模式，供 `revit-bridge` MCP 服务器或演示宿主调用。
 
@@ -51,6 +51,11 @@ Manual install: unzip the release into `%APPDATA%\Autodesk\Revit\Addins\2026\` s
    - **Remote mode**: the add-in dials `<wsUrl>/<deviceId>` on port 443 (the `wsUrl` the server returned when pairing) and sends `{"type":"auth","device_id":...,"token":...}` as the first message. The site then lists this Revit as online. Revoking the device on the site closes the connection (code 4003); the add-in stops reconnecting and shows "unpaired or revoked" until you pair again.
 
 Ad-hoc code runs ask first: when the server marks a request for confirmation, Revit shows a Yes/No dialog with what is about to run, defaulting to No, and No answers the caller with `declined on device`. Capability packs, probes and reads never prompt. Turn the dialog off with the `confirmEachRun` checkbox if a run is unattended - the server's own confirmation step still applies.
+
+Two read-only methods let a client find out what it can rely on before anything runs. Neither prompts, opens a transaction, needs an open document or is gated by `allowRemoteCodeExecution`; an older add-in answers both with `-32601 Method not found`.
+
+- `get_bridge_capabilities` (no params) returns the protocol version, add-in version, registered methods, feature flags, the Revit version (`VersionNumber` / `VersionBuild` / `VersionName`) and the .NET runtime.
+- `check_code_in_revit` (`code`, optional `parameters`) compiles a `send_code_to_revit` snippet with the same wrapper, reference whitelist and symbol blacklist without running it, and returns `compiled` plus diagnostics with 1-based user-code line/column (a blacklisted symbol is `RB0001`) and a `fingerprint` of code and environment.
 
 In remote mode, `send_code_to_revit` and `manage_solidified_tools` are rejected unless `allowRemoteCodeExecution` is `true`. Pairing switches it on and unpairing (or the server revoking the device) switches it off, so it follows the trust you granted rather than being a separate step. Local mode is not gated by this flag; the local MCP server's own confirmation step (`spec_confirmed`) applies instead.
 
@@ -104,7 +109,7 @@ Settings live in `<addin folder>\Commands\commandRegistry.json` under `settings`
 | `confirmEachRun` | `true` | Show the Yes/No dialog for ad-hoc code runs the server marks for confirmation |
 | `allowRemoteCodeExecution` | `false` until paired | Remote mode only: allow `send_code_to_revit` and `manage_solidified_tools`; rejected with an error when `false`. Set by pairing, cleared by unpairing or by the server revoking this device |
 
-The `commands` array in the same file registers the 24 built-in commands from `RevitMCPCommandSet`; `command.json` next to the DLL holds their parameter schemas.
+The `commands` array in the same file registers the 26 built-in commands from `RevitMCPCommandSet`; `command.json` next to the DLL holds their parameter schemas.
 
 ## License
 

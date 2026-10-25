@@ -1,8 +1,4 @@
-using System.IO;
-using System.Reflection;
 using Autodesk.Revit.UI;
-using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp;
 using Newtonsoft.Json;
 using RevitMCPSDK.API.Interfaces;
 
@@ -42,10 +38,13 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
 
         public void Execute(UIApplication app)
         {
+            // 先建结果对象，取文档失败时 catch 里也有处可写。
+            // Create the result first so the catch below can still report a failure to get the document.
+            ResultInfo = new ExecutionResultInfo();
+
             try
             {
                 var doc = app.ActiveUIDocument.Document;
-                ResultInfo = new ExecutionResultInfo();
 
                 // The per-run confirmation dialog lives in the plugin's transports
                 // (ConfirmationPrompt), which own the confirmEachRun setting and answer
@@ -53,16 +52,27 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
                 // code arrives here it also passed the device handshake,
                 // allowRemoteCodeExecution and the server-side review.
 
+                // 先编译（与 check_code_in_revit 共用同一步骤）；编译不通过就不开事务，
+                // 诊断按用户代码行号返回。
+                // Compile first (the same step check_code_in_revit uses). When it fails no
+                // transaction is opened and the diagnostics carry user-code line numbers.
+                var outcome = CodeExecutor.Compile(_generatedCode);
+                ResultInfo.Fingerprint = outcome.Fingerprint;
+
+                if (!outcome.Compiled)
+                {
+                    ResultInfo.Success = false;
+                    ResultInfo.Diagnostics = outcome.Diagnostics;
+                    ResultInfo.ErrorMessage = $"执行失败: {outcome.FormatErrorMessage()}";
+                    return;
+                }
+
                 using (var transaction = new Transaction(doc, "执行AI代码"))
                 {
                     transaction.Start();
 
-                    // 动态编译执行代码
-                    var result = CompileAndExecuteCode(
-                        code: _generatedCode,
-                        doc: doc,
-                        parameters: _executionParameters
-                    );
+                    // 反射调用执行方法
+                    var result = CodeExecutor.Execute(outcome, doc, _executionParameters);
 
                     transaction.Commit();
 
@@ -85,122 +95,6 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
             }
         }
 
-        private object CompileAndExecuteCode(string code, Document doc, object[] parameters)
-        {
-            // 包装代码以规范入口点
-            var wrappedCode = $@"
-using System;
-using System.Linq;
-using Autodesk.Revit.DB;
-using Autodesk.Revit.UI;
-using System.Collections.Generic;
-
-namespace AIGeneratedCode
-{{
-    public static class CodeExecutor
-    {{
-        public static object Execute(Document document, object[] parameters)
-        {{
-            // 用户代码入口
-            {code}
-        }}
-    }}
-}}";
-
-            var syntaxTree = CSharpSyntaxTree.ParseText(wrappedCode);
-
-            // 符号黑名单静态检查：编译/执行前拒绝危险符号
-            // Symbol blacklist static check: reject dangerous symbols before compile/execute.
-            EnforceSymbolBlacklist(syntaxTree);
-
-            // 添加必要的程序集引用（白名单）：只引用固定的基础库与 Revit API，
-            // 而非「全部已加载程序集」，缩小可被滥用的攻击面。
-            // Reference only a fixed whitelist of assemblies (base libraries + Revit API),
-            // instead of every loaded assembly, to shrink the abuse surface.
-            var allowedAssemblyNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            {
-                "mscorlib",
-                "System",
-                "System.Core",
-                "System.Runtime",
-                "System.Private.CoreLib",
-                "System.Collections",
-                "System.Linq",
-                "netstandard",
-                "RevitAPI",
-                "RevitAPIUI",
-            };
-
-            var references = AppDomain.CurrentDomain.GetAssemblies()
-                .Where(a => !a.IsDynamic && !string.IsNullOrEmpty(a.Location))
-                .Where(a => allowedAssemblyNames.Contains(a.GetName().Name))
-                .Select(a => MetadataReference.CreateFromFile(a.Location))
-                .Cast<MetadataReference>()
-                .ToList();
-
-            // 编译代码
-            var compilation = CSharpCompilation.Create(
-                "AIGeneratedCode",
-                syntaxTrees: new[] { syntaxTree },
-                references: references,
-                options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
-            );
-
-            using (var ms = new MemoryStream())
-            {
-                var result = compilation.Emit(ms);
-
-                // 处理编译结果
-                if (!result.Success)
-                {
-                    var errors = string.Join("\n", result.Diagnostics
-                        .Where(d => d.Severity == DiagnosticSeverity.Error)
-                        .Select(d => $"Line {d.Location.GetLineSpan().StartLinePosition.Line}: {d.GetMessage()}"));
-                    throw new Exception($"代码编译错误:\n{errors}");
-                }
-
-                // 反射调用执行方法
-                ms.Seek(0, SeekOrigin.Begin);
-                var assembly = Assembly.Load(ms.ToArray());
-                var executorType = assembly.GetType("AIGeneratedCode.CodeExecutor");
-                var executeMethod = executorType.GetMethod("Execute");
-
-                return executeMethod.Invoke(null, new object[] { doc, parameters });
-            }
-        }
-
-        /// <summary>
-        /// 符号黑名单静态检查：遍历语法树的标识符，命中危险符号即抛异常拒绝执行。
-        /// Static symbol-blacklist check: walk the syntax tree identifiers and reject
-        /// execution if a dangerous symbol (System.IO / Process / Assembly / DllImport /
-        /// File / Registry) is present.
-        /// </summary>
-        private static void EnforceSymbolBlacklist(SyntaxTree syntaxTree)
-        {
-            // 被禁止的标识符（含命名空间片段，如 System.IO 的 "IO"）
-            var forbidden = new HashSet<string>(StringComparer.Ordinal)
-            {
-                "IO",        // System.IO
-                "Process",   // System.Diagnostics.Process
-                "Assembly",  // System.Reflection.Assembly
-                "DllImport", // P/Invoke
-                "File",      // System.IO.File
-                "Registry",  // Microsoft.Win32.Registry
-            };
-
-            var root = syntaxTree.GetRoot();
-            foreach (var token in root.DescendantTokens())
-            {
-                if (token.IsKind(SyntaxKind.IdentifierToken) &&
-                    forbidden.Contains(token.ValueText))
-                {
-                    throw new Exception(
-                        $"代码包含被禁止的符号，已拒绝执行: '{token.ValueText}'\n" +
-                        $"Code contains a forbidden symbol and was rejected: '{token.ValueText}'");
-                }
-            }
-        }
-
         public string GetName()
         {
             return "执行AI代码";
@@ -218,5 +112,19 @@ namespace AIGeneratedCode
 
         [JsonProperty("errorMessage")]
         public string ErrorMessage { get; set; } = string.Empty;
+
+        /// <summary>
+        /// <para>编译失败时的诊断（形状同 check_code_in_revit），否则不输出。</para>
+        /// <para>Compiler diagnostics when compiling failed (same shape as check_code_in_revit); omitted otherwise.</para>
+        /// </summary>
+        [JsonProperty("diagnostics", NullValueHandling = NullValueHandling.Ignore)]
+        public List<CodeDiagnostic> Diagnostics { get; set; }
+
+        /// <summary>
+        /// <para>编译时的 fingerprint（同 check_code_in_revit）；未到编译这一步时不输出。</para>
+        /// <para>Fingerprint of the compile (same as check_code_in_revit); omitted when compiling was not reached.</para>
+        /// </summary>
+        [JsonProperty("fingerprint", NullValueHandling = NullValueHandling.Ignore)]
+        public string Fingerprint { get; set; }
     }
 }
