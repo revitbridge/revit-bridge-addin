@@ -148,10 +148,18 @@ namespace revit_mcp_plugin.Core
                             }
                             else
                             {
-                                // 尝试查找接受 UIApplication 的构造函数
-                                // Try searching for constructors that accept UIApplication.
+                                // 优先查找同时接受 UIApplication 与命令注册表的构造函数
+                                // （get_bridge_capabilities 用注册表列出已注册的方法），其次只接受 UIApplication 的。
+                                // Prefer a constructor that also takes the command registry
+                                // (get_bridge_capabilities lists the registered methods from it),
+                                // then one that accepts UIApplication only.
+                                var registryConstructor = type.GetConstructor(new[] { typeof(UIApplication), typeof(ICommandRegistry) });
                                 var constructor = type.GetConstructor(new[] { typeof(UIApplication) });
-                                if (constructor != null)
+                                if (registryConstructor != null)
+                                {
+                                    command = (IRevitCommand)registryConstructor.Invoke(new object[] { _uiApplication, _commandRegistry });
+                                }
+                                else if (constructor != null)
                                 {
                                     command = (IRevitCommand)constructor.Invoke(new object[] { _uiApplication });
                                 }

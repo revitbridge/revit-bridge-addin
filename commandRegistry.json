@@ -287,6 +287,32 @@
       }
     },
     {
+      "commandName": "check_code_in_revit",
+      "assemblyPath": "RevitMCPCommandSet/2026/RevitMCPCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [],
+      "description": "Compile C# code with the send_code_to_revit wrapper without running it; returns diagnostics mapped to user-code lines",
+      "developer": {
+        "name": "revitbridge",
+        "email": "",
+        "website": "",
+        "organization": "revitbridge"
+      }
+    },
+    {
+      "commandName": "get_bridge_capabilities",
+      "assemblyPath": "RevitMCPCommandSet/2026/RevitMCPCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [],
+      "description": "Report protocol version, methods, features and Revit/runtime versions of this add-in",
+      "developer": {
+        "name": "revitbridge",
+        "email": "",
+        "website": "",
+        "organization": "revitbridge"
+      }
+    },
+    {
       "commandName": "create_dimensions",
       "assemblyPath": "RevitMCPCommandSet/2026/RevitMCPCommandSet.dll",
       "enabled": true,

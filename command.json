@@ -119,6 +119,16 @@
       "assemblyPath": "RevitMCPCommandSet.dll"
     },
     {
+      "commandName": "check_code_in_revit",
+      "description": "Compile C# code with the send_code_to_revit wrapper without running it; returns diagnostics mapped to user-code lines",
+      "assemblyPath": "RevitMCPCommandSet.dll"
+    },
+    {
+      "commandName": "get_bridge_capabilities",
+      "description": "Report protocol version, methods, features and Revit/runtime versions of this add-in",
+      "assemblyPath": "RevitMCPCommandSet.dll"
+    },
+    {
       "commandName": "create_dimensions",
       "description": "Create dimension annotations between elements or points in the current view",
       "assemblyPath": "RevitMCPCommandSet.dll"
