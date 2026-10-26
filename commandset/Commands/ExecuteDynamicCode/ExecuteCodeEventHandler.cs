@@ -83,10 +83,13 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
             catch (Exception ex)
             {
                 ResultInfo.Success = false;
-                var innerMsg = ex.InnerException != null
-                    ? $"{ex.InnerException.GetType().Name}: {ex.InnerException.Message}"
-                    : ex.Message;
-                ResultInfo.ErrorMessage = $"执行失败: {innerMsg}";
+                // 运行失败：真正抛出的异常的类型全名与消息（如 Autodesk.Revit.Exceptions.ArgumentException: ...），
+                // 反射调用的 TargetInvocationException 已解包。编译错误不走这里，已在上面经 FormatErrorMessage 返回。
+                // A failed run: the full type name and message of the exception actually thrown (such as
+                // Autodesk.Revit.Exceptions.ArgumentException: ...), the reflective call's
+                // TargetInvocationException unwrapped. Compile errors do not get here; they return above
+                // through FormatErrorMessage.
+                ResultInfo.ErrorMessage = $"执行失败: {CodeExecutor.FormatRuntimeError(ex)}";
             }
             finally
             {
