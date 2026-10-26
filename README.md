@@ -26,7 +26,7 @@ The installer redeems the code at `<host>/api/v1/bridge/devices/redeem` and stor
 
 Pairing is what authorises that server to run ad-hoc code here, so it switches `allowRemoteCodeExecution` on; every such run still asks in Revit first (see [Use](#use)). To pair without it, add `-AllowRemoteCode:$false`. **Unpair** in the Settings window - or the server revoking this device - switches it back off.
 
-The installer downloads the latest [Release](https://github.com/revitbridge/revit-bridge-addin/releases), verifies it against `SHA256SUMS.txt`, backs up any previous install to `revit-bridge.backup-<timestamp>`, and writes the connection settings. Revit shows an "unsigned add-in" prompt on first load: releases are not code-signed yet (see [Signing](#signing)).
+The installer downloads the latest [Release](https://github.com/revitbridge/revit-bridge-addin/releases), verifies it against `SHA256SUMS.txt`, backs up any previous install to `revit-bridge.backup-<timestamp>`, and writes the connection settings. Revit shows a "Security - Unsigned Add-In" prompt the first time it loads each new build (so again after every upgrade, even when the previous build was on the Always Load list): releases are not code-signed yet (see [Signing](#signing)). Its default button is **Do Not Load**; choose **Always Load** to stop the prompt for that build, or **Load Once** to be asked again next start. The bridge does not listen until you click **Revit MCP Switch** after each Revit start (see [Use](#use)).
 
 Installer parameters:
 
@@ -90,7 +90,7 @@ Install your own build with `.\installer\install.ps1 -Source "plugin\bin\AddIn 2
 
 ### Signing
 
-Releases are currently unsigned (Revit shows a one-time "unsigned add-in" prompt). The workflow has an Authenticode step that runs only when the `SIGNING_PFX_BASE64` / `SIGNING_PFX_PASSWORD` secrets are set. Self-builds are always unsigned.
+Releases are currently unsigned (Revit shows the "Security - Unsigned Add-In" prompt once per new build). The workflow has an Authenticode step that runs only when the `SIGNING_PFX_BASE64` / `SIGNING_PFX_PASSWORD` secrets are set. Self-builds are always unsigned.
 
 ### Forking
 
