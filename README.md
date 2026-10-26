@@ -57,6 +57,8 @@ Two read-only methods let a client find out what it can rely on before anything 
 - `get_bridge_capabilities` (no params) returns the protocol version, add-in version, registered methods, feature flags, the Revit version (`VersionNumber` / `VersionBuild` / `VersionName`) and the .NET runtime.
 - `check_code_in_revit` (`code`, optional `parameters`) compiles a `send_code_to_revit` snippet with the same wrapper, reference whitelist and symbol blacklist without running it, and returns `compiled` plus diagnostics with 1-based user-code line/column (a blacklisted symbol is `RB0001`) and a `fingerprint` of code and environment.
 
+A snippet that compiles but throws while it runs answers `success: false` with `errorMessage` `执行失败: <full exception type name>: <message>`, for example `执行失败: Autodesk.Revit.Exceptions.ArgumentException: ...` where older builds said `ArgumentException: ...`. The reflection wrapper (`TargetInvocationException`) and an `AggregateException` holding one exception are unwrapped to the exception the code threw; inner exceptions follow as ` ---> <type>: <message>`. Compile errors keep their `Line N: ...` text and come with `diagnostics`. `manage_solidified_tools` `run` reports the same way.
+
 In remote mode, `send_code_to_revit` and `manage_solidified_tools` are rejected unless `allowRemoteCodeExecution` is `true`. Pairing switches it on and unpairing (or the server revoking the device) switches it off, so it follows the trust you granted rather than being a separate step. Local mode is not gated by this flag; the local MCP server's own confirmation step (`spec_confirmed`) applies instead.
 
 Logs: `%APPDATA%\Autodesk\Revit\Addins\2026\revit-bridge\Logs\mcp_YYYYMMDD.log`.

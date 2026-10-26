@@ -36,6 +36,11 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
         /// <summary>Diagnostic id for a blacklisted symbol.</summary>
         public const string ForbiddenSymbolId = "RB0001";
 
+        // FormatRuntimeError 最多描述这么多层异常（真正抛出的那个加它的内层），也是解包的层数上限。
+        // FormatRuntimeError describes at most this many exceptions (the one thrown plus its inner
+        // ones); also the most wrappers it peels off.
+        private const int MaxExceptionDepth = 8;
+
         private const string WrapperAssemblyName = "AIGeneratedCode";
         private const string WrapperTypeName = "AIGeneratedCode.CodeExecutor";
         private const string WrapperMethodName = "Execute";
@@ -191,6 +196,48 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
             var executeMethod = executorType.GetMethod(WrapperMethodName);
 
             return executeMethod.Invoke(null, new object[] { document, parameters ?? Array.Empty<object>() });
+        }
+
+        /// <summary>
+        /// <para>代码运行失败时 errorMessage 的说明文本：<c>&lt;异常类型全名&gt;: &lt;Message&gt;</c>。
+        /// 反射调用套上的 TargetInvocationException、只含一个异常的 AggregateException 先解包到真正抛出的异常；
+        /// 该异常若还有内层异常，依次以 <c> ---&gt; &lt;类型全名&gt;: &lt;Message&gt;</c> 接在后面（同 Exception.ToString()）；
+        /// 含多个异常的 AggregateException 到此为止，它的 Message 已列出各内层异常的消息。</para>
+        /// <para>The errorMessage text for a run that threw: <c>&lt;full exception type name&gt;: &lt;Message&gt;</c>.
+        /// The TargetInvocationException the reflective call wraps around it, and an AggregateException
+        /// holding a single exception, are unwrapped to the exception actually thrown; inner exceptions of
+        /// that one follow as <c> ---&gt; &lt;full type name&gt;: &lt;Message&gt;</c>, as in Exception.ToString().
+        /// An AggregateException holding several exceptions ends the text: its Message already lists theirs.</para>
+        /// </summary>
+        public static string FormatRuntimeError(Exception exception)
+        {
+            var text = new StringBuilder();
+            Exception current = Unwrap(exception);
+            for (int depth = 0; current != null && depth < MaxExceptionDepth; depth++)
+            {
+                if (depth > 0)
+                    text.Append(" ---> ");
+                Type type = current.GetType();
+                text.Append(type.FullName ?? type.Name).Append(": ").Append(current.Message);
+                current = current is AggregateException ? null : Unwrap(current.InnerException);
+            }
+            return text.ToString();
+        }
+
+        // 剥掉包装：TargetInvocationException 与只含一个异常的 AggregateException，可以相互嵌套。
+        // Peel off wrappers: TargetInvocationException and single-exception AggregateException, nested in any order.
+        private static Exception Unwrap(Exception exception)
+        {
+            for (int depth = 0; exception != null && depth < MaxExceptionDepth; depth++)
+            {
+                if (exception is TargetInvocationException && exception.InnerException != null)
+                    exception = exception.InnerException;
+                else if (exception is AggregateException aggregate && aggregate.InnerExceptions.Count == 1)
+                    exception = aggregate.InnerExceptions[0];
+                else
+                    break;
+            }
+            return exception;
         }
 
         /// <summary>
