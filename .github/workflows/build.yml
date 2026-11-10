@@ -140,14 +140,14 @@ jobs:
           path: dist/*.zip
           if-no-files-found: error
 
-  # One job collects every year's package, writes SHA256SUMS.txt over all of them, checks
-  # the set and, on a v* tag, publishes it as one GitHub Release. Other builds stop at the
-  # artifact.
-  release:
+  # Collects every year's package, writes SHA256SUMS.txt over all of them, checks the set and
+  # uploads it as one artifact. Runs on every build (PRs included) with the default read-only
+  # token.
+  package:
     needs: [checks, build]
     runs-on: windows-latest
-    permissions:
-      contents: write
+    outputs:
+      artifact: ${{ steps.name.outputs.artifact }}
     env:
       PACKAGE_VERSION: ${{ needs.checks.outputs.version }}
     steps:
@@ -168,17 +168,37 @@ jobs:
         shell: pwsh
         run: ./.github/scripts/check-release.ps1 -Version "$env:PACKAGE_VERSION" -Years "$env:REVIT_YEARS" -Dist dist
 
+      - name: Artifact name
+        id: name
+        shell: pwsh
+        run: |
+          "artifact=revit-bridge-addin-$env:PACKAGE_VERSION" | Add-Content -Path $env:GITHUB_OUTPUT
+
       - name: Upload release files
         uses: actions/upload-artifact@v4
         with:
-          name: revit-bridge-addin-${{ needs.checks.outputs.version }}
+          name: ${{ steps.name.outputs.artifact }}
           path: |
             dist/*.zip
             dist/SHA256SUMS.txt
           if-no-files-found: error
 
+  # v* tags only: publishes the checked files as one GitHub Release. The only job with a
+  # write token; it never runs for a pull request and checks nothing out.
+  publish:
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release files
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.package.outputs.artifact }}
+          path: dist
+
       - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
