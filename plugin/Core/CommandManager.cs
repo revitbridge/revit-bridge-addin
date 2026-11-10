@@ -55,6 +55,14 @@ namespace revit_mcp_plugin.Core
             // Load external commands from the configuration file.
             foreach (var commandConfig in _configManager.Config.Commands)
             {
+                // 损坏的文件里可能有 null 项；catch 里也要读 CommandName，所以先跳过。
+                // A damaged file can hold a null entry; the catch below reads CommandName too.
+                if (commandConfig == null)
+                {
+                    _logger.Warning("命令列表中有一项为空，已跳过\nSkipped an empty entry in the command list.");
+                    continue;
+                }
+
                 try
                 {
                     if (!commandConfig.Enabled)
