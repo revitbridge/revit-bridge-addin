@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+CI and documentation only; the add-in itself is unchanged.
+
+- CI checks that `command.json`, `commandRegistry.json` and the `CommandName` of every command class in `commandset` list the same commands, and names the ones missing from each (`.github/scripts/check-commands.ps1`, run before the build).
+- CI checks after the build that the output tree has `revit-bridge.addin`, `RevitMCPPlugin.dll`, `commandRegistry.json`, the command set's `command.json` and `RevitMCPCommandSet.dll`, and names every missing file instead of failing in the hash step (`.github/scripts/check-build-output.ps1`).
+- On a `v*` tag, CI stops before building unless the tag equals the first three parts of `AssemblyVersion` and the topmost released version in this file (`.github/scripts/check-version.ps1`).
+- README: the 26 commands include dynamic C# execution (`send_code_to_revit`, `manage_solidified_tools`); it is not an extra on top of them.
+
 ## 0.3.0 (2026-10-26)
 
 The add-in compiles a snippet without running it, reports what it can do, and names a run-time exception by its full type. Install over 0.2.0; configuration and pairing are unchanged. revit-bridge 0.4 uses the new methods; 0.3 keeps working with the old ones.
