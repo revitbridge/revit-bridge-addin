@@ -266,11 +266,22 @@ function Invoke-PairingRedeem {
         $response = $failure.Exception.Response
         $status = $null
         if ($null -ne $response) { $status = [int]$response.StatusCode }
-        # The reply body is in ErrorDetails on both 5.1 and 7: 5.1 has already read
-        # the response stream, and 7's HttpResponseMessage has no such stream.
+        # The reply body: ErrorDetails holds it on 7, and on 5.1 when the reply had a
+        # Content-Length. A chunked reply (common behind proxies and CDNs) leaves
+        # ErrorDetails empty on 5.1, and the body is then still in the response stream.
         $text = ""
         if ($null -ne $failure.ErrorDetails -and $failure.ErrorDetails.Message) {
             $text = [string]$failure.ErrorDetails.Message
+        } elseif ($null -ne $response -and $null -ne ($response | Get-Member -Name GetResponseStream -MemberType Method)) {
+            try {
+                $stream = $response.GetResponseStream()
+                if ($stream.CanSeek) { [void]$stream.Seek(0, [IO.SeekOrigin]::Begin) }
+                $reader = New-Object IO.StreamReader($stream, [Text.Encoding]::UTF8)
+                $text = $reader.ReadToEnd()
+                $reader.Close()
+            } catch {
+                Write-Verbose "Could not read the error reply from ${url}: $($_.Exception.Message)"
+            }
         }
         $errorCode = ""
         $detail = ""
