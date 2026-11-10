@@ -446,10 +446,14 @@ try {
     # Validate input
     # ---------------------------------------------------------------------------
 
-    if ($Mode -eq "remote") {
-        if ([string]::IsNullOrWhiteSpace($Server)) {
-            throw "-Server is required in remote mode, e.g. -Server https://bridge.example.com"
-        }
+    # Only the form of the parameters here. Whether -Pair fits is decided once the
+    # mode is known (the previous install's mode when -Mode is not given), below.
+    $explicitRemote = $PSBoundParameters.ContainsKey("Mode") -and $Mode -eq "remote"
+    $pairGiven = -not [string]::IsNullOrWhiteSpace($Pair)
+    if ([string]::IsNullOrWhiteSpace($Server) -and ($explicitRemote -or $pairGiven)) {
+        throw "-Server is required in remote mode, e.g. -Server https://bridge.example.com"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Server)) {
         if ($Server -match '^wss?://') {
             throw "-Server is the site address (https://host), not the WebSocket URL. The server returns the WebSocket URL when the pairing code is redeemed."
         }
@@ -458,10 +462,7 @@ try {
         }
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($Pair)) {
-        if ($Mode -ne "remote") {
-            throw "-Pair only applies to -Mode remote."
-        }
+    if ($pairGiven) {
         $Pair = $Pair.Trim().ToUpperInvariant()
         if ($Pair -match '^[A-Z0-9]{8}$') {
             $Pair = $Pair.Substring(0, 4) + "-" + $Pair.Substring(4)
@@ -563,6 +564,13 @@ try {
         $modeSource = ""
     }
 
+    # -Pair pairs a remote install: an existing remote install takes it without
+    # -Mode; a fresh or local install needs -Mode remote (switching is what -Mode is
+    # for). Checked before the code is redeemed, so a refused run does not use it up.
+    if ($pairGiven -and $effectiveMode -ne "remote") {
+        throw "-Pair only applies to a remote install, and this one would be local (a fresh install, a local install, or -Mode local). Add -Mode remote, e.g. -Mode remote -Server https://<host> -Pair XXXX-XXXX."
+    }
+
     $wsUrl = $existingWsUrl
     $deviceId = $existingDeviceId
     $effectiveToken = $existingToken
@@ -576,7 +584,7 @@ try {
         Write-Warning "Switched from remote to local mode: the device token of the pairing ($deviceId) was not kept, because in local mode it would lock the TCP port. To use the bridge server again, pair again: re-run with -Mode remote -Server https://<host> -Pair XXXX-XXXX, or enter a new code in Settings > Connection."
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($Pair)) {
+    if ($pairGiven) {
         $paired = Invoke-PairingRedeem -Server $Server -Code $Pair
         $deviceId = $paired.DeviceId
         $effectiveToken = $paired.Token
