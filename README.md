@@ -27,7 +27,7 @@ Every Revit year is its own install: its own folder under `%APPDATA%\Autodesk\Re
 
 Requirements: Windows x64, one of the Revit years above, PowerShell 5.1 or later. Close the Revit of each year you install for; a Revit of a year that is open is skipped (the installer says so at the end), other years are installed.
 
-One line, for every supported Revit installed on this machine (read from the registry; when none is found, Revit 2026), local mode on a fresh install (Revit listens on `127.0.0.1:18080`, no token needed):
+One line, for every supported Revit installed on this machine (read from the registry; when no Revit at all is found, Revit 2026), local mode on a fresh install (Revit listens on `127.0.0.1:18080`, no token needed):
 
 ```powershell
 irm https://raw.githubusercontent.com/revitbridge/revit-bridge-addin/main/installer/install.ps1 | iex
@@ -40,15 +40,21 @@ One Revit year, or several:
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/revitbridge/revit-bridge-addin/main/installer/install.ps1))) -RevitVersion 2024,2026
 ```
 
-`-RevitVersion installed` says "every supported Revit installed on this machine" explicitly (and fails when none is found instead of falling back to 2026). Installed Revit years the release has no package for (2022, or 2019 and earlier) are skipped. At the end the installer lists each year as installed, skipped or not installed, with the reason; when any year was not installed it ends with an error (exit code 1) that names them. One year failing does not undo or stop the others.
+`-RevitVersion installed` says "every supported Revit installed on this machine" explicitly (and fails when none is found instead of falling back to 2026). Installed Revit years the add-in is not built for (2022, or 2019 and earlier) are left out with one line saying so; when Revit is installed only in such years, the installer stops with an error that names them and the supported years (the 2026 fallback is only for a machine with no Revit in the registry at all). At the end the installer lists each year as installed, skipped or not installed, with the reason; when any year was not installed it ends with an error (exit code 1) that names them. One year failing does not undo or stop the others.
 
-Remote mode (Revit connects out to a bridge server; nothing is exposed on your machine). Click "Pair a Revit" on the site first to get a pairing code. A code pairs one Revit year, so name the year; for a second year, get a second code and run the command again with that year:
+Remote mode (Revit connects out to a bridge server; nothing is exposed on your machine). Click "Pair a Revit" on the site first to get a pairing code. A code pairs one Revit year (each Revit year is a separate device); for a second year, get a second code and run the command again with that year. The command the site gives you works as it is, without a year:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/revitbridge/revit-bridge-addin/main/installer/install.ps1))) -Mode remote -Server https://<host> -Pair XXXX-XXXX
+```
+
+With one supported Revit year installed, that year is paired. With several, the installer lists them (and whether each already has revit-bridge, in local or remote mode) and asks which one year to pair; Enter takes the newest. An answer that is not one of the listed years is asked again, three times at most; after that it stops without having downloaded or redeemed anything, so the code is still unused. Where it cannot ask (a non-interactive session such as `powershell -NonInteractive`, or input from a pipe or file), it stops before anything is downloaded or redeemed and names the `-RevitVersion <year>` to add. To skip the question, name the year yourself:
 
 ```powershell
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/revitbridge/revit-bridge-addin/main/installer/install.ps1))) -RevitVersion 2026 -Mode remote -Server https://<host> -Pair XXXX-XXXX
 ```
 
-With `-Pair` and more than one target year (several years given, or several Revit found without `-RevitVersion`) the installer stops before anything is downloaded or redeemed. The installer redeems the code at `<host>/api/v1/bridge/devices/redeem` and stores the device id, device token and WebSocket URL the server returns. Codes are single use and expire after 10 minutes. You can also install without `-Pair` and enter the code later under **Settings > Connection** of that Revit year. The code is redeemed before anything on disk changes: if the server refuses it ("refused (invalid, already used, or expired)") the existing install is left as it was; "the server address is probably wrong" means `-Server` answered 404 without a pairing-code error.
+With `-Pair` and several years given (`-RevitVersion 2024,2026` or `-RevitVersion installed`) the installer stops before anything is downloaded or redeemed. The installer redeems the code at `<host>/api/v1/bridge/devices/redeem` and stores the device id, device token and WebSocket URL the server returns. Codes are single use and expire after 10 minutes. You can also install without `-Pair` and enter the code later under **Settings > Connection** of that Revit year. The code is redeemed before anything on disk changes: if the server refuses it ("refused (invalid, already used, or expired)") the existing install is left as it was; "the server address is probably wrong" means `-Server` answered 404 without a pairing-code error.
 
 Pairing is what authorises that server to run ad-hoc code here, so it switches `allowRemoteCodeExecution` on; every such run still asks in Revit first (see [Use](#use)). To pair without it, add `-AllowRemoteCode:$false`. **Unpair** in the Settings window - or the server revoking this device - switches it back off.
 
@@ -66,7 +72,7 @@ Installer parameters:
 |---|---|---|
 | `-Mode local\|remote` | previous install's mode, else `local` | TCP on localhost, or outbound WebSocket to `-Server` |
 | `-Server <https url>` | | Site address of the bridge server (not the `wss://` URL), required with `-Pair` and with `-Mode remote` |
-| `-Pair XXXX-XXXX` | | Pairing code from the site, for a remote install (an existing remote install, or `-Mode remote`) of exactly one Revit year; omitted, an existing pairing is kept |
+| `-Pair XXXX-XXXX` | | Pairing code from the site, for a remote install (an existing remote install, or `-Mode remote`) of exactly one Revit year; without `-RevitVersion` and with several years installed the installer asks which one; omitted, an existing pairing is kept |
 | `-AllowRemoteCode` | on with `-Pair` | Allow `send_code_to_revit` / `manage_solidified_tools` from the paired server. Pairing switches it on; pass `-AllowRemoteCode:$false` to pair without it. Without `-Pair`, the previous setting is kept |
 | `-Source release\|<dir>` | `release` | Install from GitHub Releases, or from a local directory: one year's add-in tree (a build output, see [Build](#build), or an extracted package; installed for that year only), or a folder with a release's downloaded files (the zips and `SHA256SUMS.txt`, verified the same way, for an offline install) |
 | `-RevitVersion` | every supported Revit installed; `2026` when none is found | One year (`2026`), several (`2024,2026`), or `installed` |
@@ -118,7 +124,7 @@ AddIn 2024 Release R24\
         +-- RevitMCPCommandSet\{command.json, 2024\RevitMCPCommandSet.dll + Roslyn}
 ```
 
-Install your own build with `.\installer\install.ps1 -Source "plugin\bin\AddIn 2024 Release R24"` (it installs for the year the tree was built for). CI ([build.yml](.github/workflows/build.yml)) builds every year with the same two commands and, on a `v*` tag, publishes one `revit-bridge-addin-<tag>-revit<year>.zip` per year plus one `SHA256SUMS.txt` to Releases. Official builds and self-builds produce the same tree.
+Install your own build with `.\installer\install.ps1 -Source "plugin\bin\AddIn 2024 Release R24"` (it installs for the year the tree was built for). CI ([build.yml](.github/workflows/build.yml)) builds every year with the same two commands (job `build`), checks the set of packages and `SHA256SUMS.txt` (job `package`, read-only) and, on a `v*` tag only, publishes one `revit-bridge-addin-<tag>-revit<year>.zip` per year plus one `SHA256SUMS.txt` to Releases (job `publish`, the only one with write access). Official builds and self-builds produce the same tree.
 
 `Debug R<yy>` additionally copies the output into `%APPDATA%\Autodesk\Revit\Addins\<year>\` (without touching an existing `commandRegistry.json`).
 

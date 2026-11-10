@@ -13,7 +13,7 @@ dotnet build commandset -c "Release R26"
 
 Configurations: `Release R<yy>` and `Debug R<yy>` for R20, R21, R23, R24, R25, R26, R27 (no R22). Build order matters: `commandset` copies its output into `plugin\bin\AddIn <year> Release R<yy>\revit-bridge\Commands\`. `Debug R<yy>` also copies into `%APPDATA%\Autodesk\Revit\Addins\<year>\`; point `APPDATA` elsewhere to avoid that.
 
-The years built and released are listed once in `.github/workflows/build.yml` (`REVIT_YEARS`); a year there needs its configuration in both projects and the solution. README's "Supported Revit years" says which were load-tested; `$notLoadTestedYears` in `installer/install.ps1` must name the same not-load-tested years.
+The years built and released are listed once in `.github/workflows/build.yml` (`REVIT_YEARS`); a year there needs its configuration in both projects and the solution, and `$supportedYears` in `installer/install.ps1` must list the same years. README's "Supported Revit years" says which were load-tested; `$notLoadTestedYears` in the installer must name the same not-load-tested years. CI jobs: `checks`, `build` (matrix per year), `package` (SHA256SUMS.txt, check-release, artifact; read-only) and `publish` (`v*` tags only, the only job with `contents: write`; never give a job that runs for a pull request a write token).
 
 ## Test
 
@@ -25,7 +25,7 @@ No unit tests. Smoke, per year: both builds succeed with 0 warnings and `.github
 - `AddinFolderName` (both csproj) must equal the folder in the manifest's `<Assembly>` path. Do not rename the C# namespace `revit_mcp_plugin`.
 - Year-specific Revit API goes through `#if REVIT<year>_OR_GREATER` with a comment naming the API and the release; the symbols are defined only in `Directory.Build.targets`. Prefer one helper per differing API (e.g. `ElementIdCompat.FromInt`) to `#if` in commands. `LangVersion` is set once in `Directory.Build.props`.
 - `commandRegistry.json` names the command set's year folder as `{VERSION}`; never write a year into it.
-- `installer/install.ps1`, workflow scripts and any `.ps1`/`.sh`/`.py` here are ASCII only and run on Windows PowerShell 5.1 and pwsh 7. The installer must not require a token file; `-AllowRemoteCode` stays off by default; `-Pair` pairs exactly one Revit year.
+- `installer/install.ps1`, workflow scripts and any `.ps1`/`.sh`/`.py` here are ASCII only and run on Windows PowerShell 5.1 and pwsh 7. The installer must not require a token file; `-AllowRemoteCode` stays off by default; `-Pair` pairs exactly one Revit year (without `-RevitVersion` and with several installed it asks, or stops where it cannot ask); the pairing code is never printed.
 - Pairing codes, server-side execution policy and per-call confirmation belong to a later phase; do not add them here without a plan.
 - Public repo: only `README.md`, `CHANGELOG.md`, `CLAUDE.md`, license/notice files and `FORKING.md` as documentation. No design notes, research or logs.
 - No secrets: `.env*`, `.secrets/`, `*.token` are ignored and must never be committed.
