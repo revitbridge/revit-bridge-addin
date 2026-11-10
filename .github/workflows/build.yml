@@ -8,19 +8,20 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
-  REVIT_CONFIG: Release R26
-  ADDIN_OUTPUT: plugin/bin/AddIn 2026 Release R26
+  # The Revit years built and released, the only place they are listed in this workflow.
+  # A year here needs Release R<yy> in both projects (README, "Supported Revit years").
+  # Release R27 builds but is not released: Revit 2027 is not supported yet.
+  REVIT_YEARS: "2020 2021 2023 2024 2025 2026"
 
 jobs:
-  build:
+  checks:
     runs-on: windows-latest
-    env:
-      # Optional Authenticode signing (D4). Leave the secrets unset to skip.
-      SIGNING_PFX_BASE64: ${{ secrets.SIGNING_PFX_BASE64 }}
-      SIGNING_PFX_PASSWORD: ${{ secrets.SIGNING_PFX_PASSWORD }}
+    outputs:
+      years: ${{ steps.years.outputs.years }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -39,22 +40,70 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: ./.github/scripts/check-version.ps1 -Tag "$env:RELEASE_TAG"
 
+      - name: Revit years for the build matrix
+        id: years
+        shell: pwsh
+        run: |
+          $years = @($env:REVIT_YEARS -split '\s+' | Where-Object { $_ })
+          "years=" + (ConvertTo-Json -Compress -InputObject $years) | Add-Content -Path $env:GITHUB_OUTPUT
+          Write-Host "Revit years: $($years -join ', ')"
+
+      # v0.4.0 on a tag, dev-<sha7> otherwise; part of every package name.
+      - name: Package version
+        id: version
+        shell: pwsh
+        env:
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          if ($env:REF -like "refs/tags/v*") { $version = $env:REF_NAME } else { $version = "dev-" + $env:SHA.Substring(0, 7) }
+          "version=$version" | Add-Content -Path $env:GITHUB_OUTPUT
+          Write-Host "Package version: $version"
+
+  build:
+    needs: checks
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        year: ${{ fromJSON(needs.checks.outputs.years) }}
+    name: build (Revit ${{ matrix.year }})
+    env:
+      REVIT_YEAR: ${{ matrix.year }}
+      PACKAGE_VERSION: ${{ needs.checks.outputs.version }}
+      # Optional Authenticode signing (D4). Leave the secrets unset to skip.
+      SIGNING_PFX_BASE64: ${{ secrets.SIGNING_PFX_BASE64 }}
+      SIGNING_PFX_PASSWORD: ${{ secrets.SIGNING_PFX_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
       - name: Set up .NET SDK (pinned by global.json)
         uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
 
+      # Release R<yy> and its output folder plugin/bin/AddIn <year> Release R<yy>.
+      - name: Configuration for Revit ${{ matrix.year }}
+        shell: pwsh
+        run: |
+          $config = "Release R" + $env:REVIT_YEAR.Substring(2)
+          "REVIT_CONFIG=$config" | Add-Content -Path $env:GITHUB_ENV
+          "ADDIN_OUTPUT=plugin/bin/AddIn $env:REVIT_YEAR $config" | Add-Content -Path $env:GITHUB_ENV
+
       # Directory.Build.props turns on Deterministic + ContinuousIntegrationBuild
       # when GITHUB_ACTIONS=true, so these are the same commands as a local build.
       - name: Build plugin
-        run: dotnet build plugin -c "${{ env.REVIT_CONFIG }}"
+        shell: pwsh
+        run: dotnet build plugin -c "$env:REVIT_CONFIG"
 
       - name: Build command set
-        run: dotnet build commandset -c "${{ env.REVIT_CONFIG }}"
+        shell: pwsh
+        run: dotnet build commandset -c "$env:REVIT_CONFIG"
 
       - name: Check build output
         shell: pwsh
-        run: ./.github/scripts/check-build-output.ps1 -OutputDir "$env:ADDIN_OUTPUT"
+        run: ./.github/scripts/check-build-output.ps1 -Year "$env:REVIT_YEAR" -OutputDir "$env:ADDIN_OUTPUT"
 
       - name: Assembly hashes (deterministic build check, compare across runs)
         shell: pwsh
@@ -62,7 +111,7 @@ jobs:
           $addinDir = Join-Path $env:ADDIN_OUTPUT "revit-bridge"
           Get-FileHash -Algorithm SHA256 -Path @(
             (Join-Path $addinDir "RevitMCPPlugin.dll"),
-            (Join-Path $addinDir "Commands\RevitMCPCommandSet\2026\RevitMCPCommandSet.dll")
+            (Join-Path $addinDir "Commands\RevitMCPCommandSet\$env:REVIT_YEAR\RevitMCPCommandSet.dll")
           ) | Format-Table Hash, @{ n = 'File'; e = { Split-Path $_.Path -Leaf } } -AutoSize
 
       - name: Sign assemblies (only when a signing certificate is configured)
@@ -76,39 +125,81 @@ jobs:
           $addinDir = Join-Path $env:ADDIN_OUTPUT "revit-bridge"
           $targets = @(
             (Join-Path $addinDir "RevitMCPPlugin.dll"),
-            (Join-Path $addinDir "Commands\RevitMCPCommandSet\2026\RevitMCPCommandSet.dll")
+            (Join-Path $addinDir "Commands\RevitMCPCommandSet\$env:REVIT_YEAR\RevitMCPCommandSet.dll")
           )
           & $signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $pfx /p $env:SIGNING_PFX_PASSWORD @targets
           Remove-Item $pfx -Force
 
       - name: Package
-        id: package
         shell: pwsh
-        run: |
-          if ("${{ github.ref }}" -like "refs/tags/v*") {
-            $version = "${{ github.ref_name }}"
-          } else {
-            $version = "dev-" + "${{ github.sha }}".Substring(0, 7)
-          }
-          $zipName = "revit-bridge-addin-$version.zip"
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Compress-Archive -Path "$env:ADDIN_OUTPUT/*" -DestinationPath "dist/$zipName" -CompressionLevel Optimal
-          $hash = (Get-FileHash "dist/$zipName" -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  $zipName" | Set-Content -Path dist/SHA256SUMS.txt -Encoding ascii -NoNewline
-          "zip_name=$zipName" | Add-Content -Path $env:GITHUB_OUTPUT
-          Get-Content dist/SHA256SUMS.txt
+        run: ./.github/scripts/package-year.ps1 -Year "$env:REVIT_YEAR" -Version "$env:PACKAGE_VERSION" -OutputDir "$env:ADDIN_OUTPUT" -Dist dist
 
-      - name: Upload build artifact
+      - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.package.outputs.zip_name }}
+          name: package-revit${{ matrix.year }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  # Collects every year's package, writes SHA256SUMS.txt over all of them, checks the set and
+  # uploads it as one artifact. Runs on every build (PRs included) with the default read-only
+  # token.
+  package:
+    needs: [checks, build]
+    runs-on: windows-latest
+    outputs:
+      artifact: ${{ steps.name.outputs.artifact }}
+    env:
+      PACKAGE_VERSION: ${{ needs.checks.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: package-revit*
+          path: dist
+          merge-multiple: true
+
+      - name: Write SHA256SUMS.txt
+        shell: pwsh
+        run: ./.github/scripts/write-sha256sums.ps1 -Dist dist
+
+      - name: Check release files
+        shell: pwsh
+        run: ./.github/scripts/check-release.ps1 -Version "$env:PACKAGE_VERSION" -Years "$env:REVIT_YEARS" -Dist dist
+
+      - name: Artifact name
+        id: name
+        shell: pwsh
+        run: |
+          "artifact=revit-bridge-addin-$env:PACKAGE_VERSION" | Add-Content -Path $env:GITHUB_OUTPUT
+
+      - name: Upload release files
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.name.outputs.artifact }}
           path: |
             dist/*.zip
             dist/SHA256SUMS.txt
           if-no-files-found: error
 
+  # v* tags only: publishes the checked files as one GitHub Release. The only job with a
+  # write token; it never runs for a pull request and checks nothing out.
+  publish:
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release files
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.package.outputs.artifact }}
+          path: dist
+
       - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |

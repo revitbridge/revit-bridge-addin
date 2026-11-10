@@ -28,4 +28,21 @@ namespace RevitMCPCommandSet.Utils
         public static int GetIntValue(this ElementId id) => id.IntegerValue;
 #endif
     }
+
+    /// <summary>
+    /// Creates an ElementId from an int id (as read from a request), compatible with all Revit versions.
+    /// A class of its own: Nice3point.Revit.Extensions (a global using) also has an ElementIdExtensions,
+    /// so a static call on that name would be ambiguous.
+    /// </summary>
+    internal static class ElementIdCompat
+    {
+#if REVIT2024_OR_GREATER
+        // ElementId(Int64) is new in Revit 2024, where ElementId(Int32) became obsolete
+        // (2024 and 2025 still have it, 2026 removed it).
+        public static ElementId FromInt(int value) => new ElementId((long)value);
+#else
+        // Before Revit 2024 ElementId(Int32) is the only numeric constructor.
+        public static ElementId FromInt(int value) => new ElementId(value);
+#endif
+    }
 }

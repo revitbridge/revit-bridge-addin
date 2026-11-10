@@ -40,8 +40,8 @@ Update `NOTICE` with your own copyright line on top and leave the existing attri
 
 ## 5. Installer and CI
 
-- `installer/install.ps1`: change the default `-Repo` to your GitHub repository so `-Source release` downloads your releases. The zip name pattern `revit-bridge-addin-*.zip` is matched in `Get-ReleaseSource`; rename it together with the `Package` step in `.github/workflows/build.yml`.
-- `.github/workflows/build.yml`: the sign step looks for `revit-bridge\RevitMCPPlugin.dll`; update the folder name there too.
+- `installer/install.ps1`: change the default `-Repo` to your GitHub repository so `-Source release` downloads your releases. The package names `revit-bridge-addin-<tag>-revit<year>.zip` (and the older single `revit-bridge-addin-*.zip`) are matched in `Select-ReleasePackages`; rename them together with `.github/scripts/package-year.ps1`, `write-sha256sums.ps1` and `check-release.ps1`.
+- `.github/workflows/build.yml`: the sign and hash steps look for `revit-bridge\RevitMCPPlugin.dll`, and `check-build-output.ps1` / `check-release.ps1` for the `revit-bridge` folder; update the folder name there too. `REVIT_YEARS` lists the Revit years built and released; keep `$supportedYears` in the installer equal to it, and `$defaultFolderName` there equal to your folder name.
 - Releases from CI are unsigned unless you set the `SIGNING_PFX_BASE64` / `SIGNING_PFX_PASSWORD` secrets. Revit shows an "unsigned add-in" prompt for unsigned builds.
 
 ## 6. Defaults you may want to change

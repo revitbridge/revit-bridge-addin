@@ -1,6 +1,7 @@
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using RevitMCPSDK.API.Interfaces;
+using RevitMCPCommandSet.Utils;
 
 namespace RevitMCPCommandSet.Services
 {
@@ -40,7 +41,7 @@ namespace RevitMCPCommandSet.Services
                 {
                     if (int.TryParse(idStr, out int elementIdValue))
                     {
-                        var elementId = new ElementId(elementIdValue);
+                        var elementId = ElementIdCompat.FromInt(elementIdValue);
                         // 检查元素是否存在
                         if (doc.GetElement(elementId) != null)
                         {

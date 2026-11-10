@@ -1,0 +1,24 @@
+<Project>
+  <!-- Shared by plugin\ and commandset\. Keep this file ASCII only.
+       Imported after the project file, so $(RevitVersion) from the configuration is known here.
+
+       Revit year symbols, the one place they are defined for both projects:
+         REVIT<year>              the year being built, e.g. REVIT2026
+         REVIT<year>_OR_GREATER   every year from 2020 up to the year being built
+       Code selects a year-specific API with #if REVIT20xx_OR_GREATER and a comment naming the
+       API and the release that introduced it. Nice3point.Revit.Build.Tasks (commandset) would
+       generate the same symbols from the Configurations list; it is switched off so that
+       this file stays the only source. -->
+  <PropertyGroup Condition="'$(RevitVersion)' != ''">
+    <DisableImplicitRevitDefines>true</DisableImplicitRevitDefines>
+    <DefineConstants>$(DefineConstants);REVIT$(RevitVersion)</DefineConstants>
+    <DefineConstants Condition="$(RevitVersion) &gt;= 2020">$(DefineConstants);REVIT2020_OR_GREATER</DefineConstants>
+    <DefineConstants Condition="$(RevitVersion) &gt;= 2021">$(DefineConstants);REVIT2021_OR_GREATER</DefineConstants>
+    <DefineConstants Condition="$(RevitVersion) &gt;= 2022">$(DefineConstants);REVIT2022_OR_GREATER</DefineConstants>
+    <DefineConstants Condition="$(RevitVersion) &gt;= 2023">$(DefineConstants);REVIT2023_OR_GREATER</DefineConstants>
+    <DefineConstants Condition="$(RevitVersion) &gt;= 2024">$(DefineConstants);REVIT2024_OR_GREATER</DefineConstants>
+    <DefineConstants Condition="$(RevitVersion) &gt;= 2025">$(DefineConstants);REVIT2025_OR_GREATER</DefineConstants>
+    <DefineConstants Condition="$(RevitVersion) &gt;= 2026">$(DefineConstants);REVIT2026_OR_GREATER</DefineConstants>
+    <DefineConstants Condition="$(RevitVersion) &gt;= 2027">$(DefineConstants);REVIT2027_OR_GREATER</DefineConstants>
+  </PropertyGroup>
+</Project>

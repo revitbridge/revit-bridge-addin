@@ -66,7 +66,7 @@ namespace RevitMCPCommandSet.Services
                     FamilySymbol symbol = null;
                     if (data.TypeId != -1 && data.TypeId != 0)
                     {
-                        ElementId typeELeId = new ElementId(data.TypeId);
+                        ElementId typeELeId = ElementIdCompat.FromInt(data.TypeId);
                         if (typeELeId != null)
                         {
                             Element typeEle = doc.GetElement(typeELeId);
@@ -120,7 +120,7 @@ namespace RevitMCPCommandSet.Services
                         Element explicitHost = null;
                         if (data.HostWallId > 0)
                         {
-                            ElementId hostId = new ElementId(data.HostWallId);
+                            ElementId hostId = ElementIdCompat.FromInt(data.HostWallId);
                             Element hostElem = doc.GetElement(hostId);
                             if (hostElem is Wall)
                             {
