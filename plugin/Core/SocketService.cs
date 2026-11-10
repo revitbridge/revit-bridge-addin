@@ -184,10 +184,14 @@ namespace revit_mcp_plugin.Core
         private void HandleClientCommunication(object clientObj)
         {
             TcpClient tcpClient = (TcpClient)clientObj;
-            NetworkStream stream = tcpClient.GetStream();
 
             try
             {
+                // 在 try 内取流：连接刚接受就被重置时 GetStream 会抛出，而后台线程上
+                // 未处理的异常会结束整个 Revit 进程。
+                // Inside the try: GetStream throws when the connection was reset right after
+                // accept, and an unhandled exception on a background thread ends Revit.
+                NetworkStream stream = tcpClient.GetStream();
                 byte[] buffer = new byte[8192];
 
                 while (_isRunning && tcpClient.Connected)
