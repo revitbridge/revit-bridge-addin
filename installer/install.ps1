@@ -60,7 +60,10 @@
     Pairing code from the site, in the form XXXX-XXXX, with -Server. For a
     remote install: an existing remote install takes it without -Mode, a fresh
     or local install needs -Mode remote. A code pairs one Revit year (each Revit
-    year is a separate device), so -Pair needs exactly one target year.
+    year is a separate device), so -Pair needs exactly one target year. Without
+    -RevitVersion and with several supported Revit years installed, the
+    installer asks which year to pair (default: the newest) when the session
+    can ask; otherwise it stops and says to add -RevitVersion <year>.
     The installer redeems it at <Server>/api/v1/bridge/devices/redeem and
     stores the device id, device token and WebSocket URL it gets back, before
     any file is touched. Codes are single use and expire after 10 minutes. Omit
@@ -130,6 +133,9 @@ param(
     # Years whose package is compiled but has not been loaded in a real Revit (README,
     # "Supported Revit years"). Keep both lists the same.
     $notLoadTestedYears = @("2020", "2027")
+    # The add-in folder under Addins\<year>\ (AddinFolderName), to tell installed years apart
+    # before a package is read.
+    $defaultFolderName = "revit-bridge"
     # State shared with the helpers below (a hashtable, so they can change it).
     $run = @{ WorkDir = $null; Finished = $false; Completed = (New-Object System.Collections.Generic.List[string]) }
 
@@ -235,6 +241,64 @@ param(
             if ($null -ne $machine) { $machine.Close() }
         }
         return @($years | Sort-Object -Unique)
+    }
+
+    function Test-CanPrompt {
+        # Whether this session can ask a question and read the answer: an interactive user
+        # session, a console whose input is not redirected, a host that was not started with
+        # -NonInteractive, and a usable RawUI. Run as "irm | iex" or as a scriptblock the
+        # script runs in the user's own session, so its command line is what counts.
+        try {
+            if (-not [Environment]::UserInteractive) { return $false }
+            if ([Console]::IsInputRedirected) { return $false }
+            foreach ($arg in @([Environment]::GetCommandLineArgs() | Select-Object -Skip 1)) {
+                # Arguments after -File / -Command belong to the script, not to the host.
+                if ($arg -match '^[-/](f|file|c|command|e|ec|enc|encodedcommand|cwa|commandwithargs)$') { break }
+                if ($arg -match '^[-/]noni') { return $false }
+            }
+            $null = $Host.UI.RawUI.CursorPosition
+            return $true
+        } catch {
+            return $false
+        }
+    }
+
+    function Read-InstallerAnswer {
+        param([string]$Prompt)
+        return [string](Read-Host -Prompt $Prompt)
+    }
+
+    function Get-InstallState {
+        param([string]$Year)
+        # What is installed for that year, for the question below; reads the mode only.
+        $registry = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$Year\$defaultFolderName\Commands\commandRegistry.json"
+        if (-not (Test-Path -LiteralPath $registry -PathType Leaf)) { return "revit-bridge not installed" }
+        try {
+            $mode = ConvertFrom-RegistryMode ([string](Get-Content -LiteralPath $registry -Raw -Encoding UTF8 | ConvertFrom-Json).settings.mode)
+        } catch {
+            $mode = $null
+        }
+        if ($mode -eq "remote") { return "revit-bridge installed, remote mode" }
+        if ($mode -eq "local") { return "revit-bridge installed, local mode" }
+        return "revit-bridge installed"
+    }
+
+    function Select-PairYear {
+        param([string[]]$Years)
+        # One pairing code, several Revit years: ask which one year to pair; the newest is the
+        # default. The answer is never repeated back (someone may paste the code there).
+        $default = $Years[$Years.Count - 1]
+        Write-Host "A pairing code pairs one Revit year (each Revit year is a separate device). Revit years installed here:"
+        foreach ($year in $Years) {
+            Write-Host ("  {0}  {1}" -f $year, (Get-InstallState -Year $year))
+        }
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+            $answer = (Read-InstallerAnswer -Prompt "Which Revit year should this code pair? Press Enter for $default").Trim()
+            if ($answer -eq "") { return $default }
+            if ($Years -contains $answer) { return $answer }
+            Write-Host "That is not one of the years listed ($($Years -join ', '))."
+        }
+        throw "No Revit year was chosen, so nothing was downloaded or redeemed and the pairing code is still unused. Run the command again and pick one of $($Years -join ', '), or add -RevitVersion <year>, e.g. -RevitVersion $default."
     }
 
     function Get-WorkDir {
@@ -1105,7 +1169,18 @@ param(
         }
 
         # A pairing code makes one device, and every Revit year is a device of its own.
-        # Checked before anything is downloaded or redeemed.
+        # Without -RevitVersion and with several supported years installed (the command a
+        # bridge host hands out names no year), ask which one to pair when the session can
+        # ask. Decided before anything is downloaded or redeemed.
+        if ($pairGiven -and $targets.Count -gt 1 -and $targetsFrom -eq "installed" -and -not $request.Installed) {
+            if (Test-CanPrompt) {
+                $targets = @(Select-PairYear -Years $targets)
+                $targetsFrom = "chosen"
+                Write-Host "Pairing Revit $($targets[0])."
+            } else {
+                throw "-Pair pairs one Revit year (each Revit year is a separate device), and Revit $($detected -join ', ') are installed here. This session cannot ask which one, so nothing was downloaded or redeemed. Add the year to the command, e.g. -RevitVersion $($targets[$targets.Count - 1]) (one of $($targets -join ', '))."
+            }
+        }
         if ($pairGiven -and $targets.Count -ne 1) {
             throw "-Pair pairs one Revit year (each Revit year is a separate device with its own pairing code), and this run would install for Revit $($targets -join ', '). Pair one year at a time: add -RevitVersion <year>, e.g. -RevitVersion $($targets[$targets.Count - 1]) -Pair XXXX-XXXX, and get a new code on the site for each further year."
         }
