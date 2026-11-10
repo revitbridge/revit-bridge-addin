@@ -578,10 +578,17 @@ try {
     # In local mode a non-empty token is the TCP pre-shared secret that every local
     # call must carry, which a device token from pairing is not: carrying it over
     # would refuse every call from the local MCP server. A token from a previous
-    # local install is the user's own TCP secret and stays.
+    # local install is the user's own TCP secret and stays. Without the token there
+    # is no pairing behind allowRemoteCodeExecution any more, so it goes off too
+    # unless -AllowRemoteCode says otherwise.
     if ($effectiveMode -eq "local" -and $existingMode -eq "remote" -and -not [string]::IsNullOrEmpty($existingToken)) {
         $effectiveToken = ""
-        Write-Warning "Switched from remote to local mode: the device token of the pairing ($deviceId) was not kept, because in local mode it would lock the TCP port. To use the bridge server again, pair again: re-run with -Mode remote -Server https://<host> -Pair XXXX-XXXX, or enter a new code in Settings > Connection."
+        $remoteCodeNote = ""
+        if (-not $PSBoundParameters.ContainsKey("AllowRemoteCode")) {
+            $existingAllowRemoteCode = $false
+            $remoteCodeNote = " Remote code execution (allowRemoteCodeExecution) was switched off with it."
+        }
+        Write-Warning "Switched from remote to local mode: the device token of the pairing ($deviceId) was not kept, because in local mode it would lock the TCP port.$remoteCodeNote To use the bridge server again, pair again: re-run with -Mode remote -Server https://<host> -Pair XXXX-XXXX, or enter a new code in Settings > Connection."
     }
 
     if ($pairGiven) {
