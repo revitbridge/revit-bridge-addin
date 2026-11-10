@@ -333,6 +333,51 @@ function Get-FileSha256 {
     return "(missing)"
 }
 
+function Restore-PreviousInstall {
+    param([hashtable]$State)
+    # Undo the file section: remove what this run wrote and put the previous folder and
+    # manifest back under the names they had. Plain .NET calls and no output, so this also
+    # works from a finally block while the run is being stopped (Ctrl+C). Problems are
+    # collected in $State.Problems.
+    $State.Problems = New-Object System.Collections.Generic.List[string]
+    $plugin = $State.PluginDestination
+    # The folder at the destination is this run's (partial) copy unless the previous
+    # one could not be moved away.
+    if (($State.MovedPlugin -or -not $State.HadPlugin) -and [IO.Directory]::Exists($plugin)) {
+        try {
+            [IO.Directory]::Delete($plugin, $true)
+        } catch {
+            $State.Problems.Add("could not remove the partly copied $plugin ($($_.Exception.Message))")
+        }
+    }
+    if ($State.MovedPlugin) {
+        if ([IO.Directory]::Exists($plugin)) {
+            $State.Problems.Add("the previous add-in is still in $($State.BackupDestination)")
+        } else {
+            try {
+                [IO.Directory]::Move($State.BackupDestination, $plugin)
+            } catch {
+                $State.Problems.Add("could not move $($State.BackupDestination) back to $plugin ($($_.Exception.Message))")
+            }
+        }
+    }
+    if ($State.BackedUpManifest) {
+        try {
+            [IO.File]::Copy($State.ManifestBackup, $State.AddinDestination, $true)
+            [IO.File]::Delete($State.ManifestBackup)
+        } catch {
+            $State.Problems.Add("could not move $($State.ManifestBackup) back to $($State.AddinDestination) ($($_.Exception.Message))")
+        }
+    } elseif (-not $State.HadManifest -and [IO.File]::Exists($State.AddinDestination)) {
+        try {
+            [IO.File]::Delete($State.AddinDestination)
+        } catch {
+            $State.Problems.Add("could not remove the new $($State.AddinDestination) ($($_.Exception.Message))")
+        }
+    }
+    $State.Restored = $true
+}
+
 function ConvertFrom-RegistryMode {
     param([string]$Value)
     # "websocket" -> "remote", "tcp" -> "local" (ignoring case, as the add-in
@@ -581,28 +626,46 @@ try {
     # Install files
     # ---------------------------------------------------------------------------
     # The previous add-in folder is renamed to a backup and the manifest copied to
-    # one. If anything below fails, what this run wrote is removed and both are put
-    # back under their own names.
+    # one. If anything below fails - or the run is stopped half way (Ctrl+C) - what
+    # this run wrote is removed and both are put back under their own names.
 
+    # Backups are named by the second; an earlier run in the same second (or a clock
+    # change) can have left that name already, and Move-Item into an existing folder
+    # would nest the install inside it. Pick one suffix that is free for both names.
     $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-    $backupDestination = "$pluginDestination.backup-$stamp"
-    $manifestBackup = "$addinDestination.backup-$stamp"
-    $hadPlugin = Test-Path -LiteralPath $pluginDestination
-    $hadManifest = Test-Path -LiteralPath $addinDestination
-    $movedPlugin = $false
-    $backedUpManifest = $false
+    $suffix = $stamp
+    $n = 1
+    while ((Test-Path -LiteralPath "$pluginDestination.backup-$suffix") -or (Test-Path -LiteralPath "$addinDestination.backup-$suffix")) {
+        $n++
+        $suffix = "$stamp-$n"
+    }
+    $fileState = @{
+        PluginDestination = $pluginDestination
+        AddinDestination  = $addinDestination
+        BackupDestination = "$pluginDestination.backup-$suffix"
+        ManifestBackup    = "$addinDestination.backup-$suffix"
+        HadPlugin         = (Test-Path -LiteralPath $pluginDestination)
+        HadManifest       = (Test-Path -LiteralPath $addinDestination)
+        MovedPlugin       = $false
+        BackedUpManifest  = $false
+        Started           = $false
+        Done              = $false
+        Restored          = $false
+        Problems          = $null
+    }
 
     New-Item -ItemType Directory -Path $addinsRoot -Force | Out-Null
 
     try {
-        if ($hadPlugin) {
-            Move-Item -LiteralPath $pluginDestination -Destination $backupDestination
-            $movedPlugin = $true
-            Write-Host "Existing add-in backed up to: $backupDestination"
+        $fileState.Started = $true
+        if ($fileState.HadPlugin) {
+            Move-Item -LiteralPath $pluginDestination -Destination $fileState.BackupDestination
+            $fileState.MovedPlugin = $true
+            Write-Host "Existing add-in backed up to: $($fileState.BackupDestination)"
         }
-        if ($hadManifest) {
-            Copy-Item -LiteralPath $addinDestination -Destination $manifestBackup -Force
-            $backedUpManifest = $true
+        if ($fileState.HadManifest) {
+            Copy-Item -LiteralPath $addinDestination -Destination $fileState.ManifestBackup
+            $fileState.BackedUpManifest = $true
         }
 
         Copy-Item -LiteralPath $layout.PluginDir -Destination $addinsRoot -Recurse -Force
@@ -611,51 +674,29 @@ try {
         # UTF-8 without BOM on both 5.1 and 7, like the shipped file and the add-in's
         # own writes (Set-Content -Encoding UTF8 adds a BOM on 5.1 only).
         [IO.File]::WriteAllText($registryDestination, $registryJson, (New-Object System.Text.UTF8Encoding($false)))
+        $fileState.Done = $true
     } catch {
         $installFailure = $_.Exception.Message
-        $restoreProblems = @()
-
-        # The folder at the destination is this run's (partial) copy unless the
-        # previous one could not be moved away.
-        if (($movedPlugin -or -not $hadPlugin) -and (Test-Path -LiteralPath $pluginDestination)) {
-            try {
-                Remove-Item -LiteralPath $pluginDestination -Recurse -Force
-            } catch {
-                $restoreProblems += "could not remove the partly copied $pluginDestination ($($_.Exception.Message))"
-            }
+        Restore-PreviousInstall -State $fileState
+        if ($fileState.Problems.Count -gt 0) {
+            throw "Installing failed and the previous install could not be restored completely: $($fileState.Problems -join '; '). Rename the backup back by hand. Cause: $installFailure"
         }
-        if ($movedPlugin) {
-            if (Test-Path -LiteralPath $pluginDestination) {
-                $restoreProblems += "the previous add-in is still in $backupDestination"
-            } else {
-                try {
-                    Move-Item -LiteralPath $backupDestination -Destination $pluginDestination
-                } catch {
-                    $restoreProblems += "could not move $backupDestination back to $pluginDestination ($($_.Exception.Message))"
-                }
-            }
-        }
-        if ($backedUpManifest) {
-            try {
-                Move-Item -LiteralPath $manifestBackup -Destination $addinDestination -Force
-            } catch {
-                $restoreProblems += "could not move $manifestBackup back to $addinDestination ($($_.Exception.Message))"
-            }
-        } elseif (-not $hadManifest -and (Test-Path -LiteralPath $addinDestination)) {
-            try {
-                Remove-Item -LiteralPath $addinDestination -Force
-            } catch {
-                $restoreProblems += "could not remove the new $addinDestination ($($_.Exception.Message))"
-            }
-        }
-
-        if ($restoreProblems.Count -gt 0) {
-            throw "Installing failed and the previous install could not be restored completely: $($restoreProblems -join '; '). Rename the backup back by hand. Cause: $installFailure"
-        }
-        if ($hadPlugin -or $hadManifest) {
+        if ($fileState.HadPlugin -or $fileState.HadManifest) {
             throw "Installing failed, so the previous install was restored unchanged. Cause: $installFailure"
         }
         throw "Installing failed; the partly copied files were removed. Cause: $installFailure"
+    } finally {
+        # Started but neither finished nor restored by the catch above: the run was
+        # stopped (Ctrl+C), which skips catch blocks but still runs finally.
+        if ($fileState.Started -and -not $fileState.Done -and -not $fileState.Restored) {
+            Restore-PreviousInstall -State $fileState
+            if ($fileState.Problems.Count -gt 0) {
+                $interruptMessage = "The install was interrupted and the previous install could not be restored completely: $($fileState.Problems -join '; '). Rename the backup back by hand."
+            } else {
+                $interruptMessage = "The install was interrupted; the previous install was restored unchanged."
+            }
+            try { Write-Warning $interruptMessage } catch { [Console]::Error.WriteLine("WARNING: " + $interruptMessage) }
+        }
     }
 
     # ---------------------------------------------------------------------------
