@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using Newtonsoft.Json;
@@ -172,7 +174,7 @@ namespace revit_mcp_plugin.Configuration
             {
                 try
                 {
-                    File.Move(tempPath, path, overwrite);
+                    ReplaceOrMove(tempPath, path, overwrite);
                     return;
                 }
                 catch (Exception ex) when ((ex is IOException || ex is UnauthorizedAccessException) &&
@@ -182,6 +184,32 @@ namespace revit_mcp_plugin.Configuration
                     Thread.Sleep(MoveRetryDelayMs * attempt);
                 }
             }
+        }
+
+        // 用 MoveFileEx 改名覆盖：.NET 8 的 File.Move(源, 目标, true) 内部就是这个调用，而该重载在
+        // .NET Framework 4.8 上不存在；File.Replace 在读者占用目标时会留下 "~RF*.TMP"（旧内容，含 token）。
+        // Rename over the target with MoveFileEx: .NET 8's File.Move(source, target, true) makes
+        // this same call, but that overload does not exist on .NET Framework 4.8 (R20-R24), and
+        // File.Replace leaves a "<name>~RF*.TMP" copy of the old contents (token included) behind
+        // when a reader has the target open.
+        private const int MOVEFILE_REPLACE_EXISTING = 0x1;
+        private const int MOVEFILE_WRITE_THROUGH = 0x8;
+        private const int ERROR_ACCESS_DENIED = 5;
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool MoveFileEx(string existingFileName, string newFileName, int flags);
+
+        private static void ReplaceOrMove(string tempPath, string path, bool overwrite)
+        {
+            int flags = MOVEFILE_WRITE_THROUGH | (overwrite ? MOVEFILE_REPLACE_EXISTING : 0);
+            if (MoveFileEx(tempPath, path, flags))
+                return;
+
+            int error = Marshal.GetLastWin32Error();
+            string message = new Win32Exception(error).Message + " (" + path + ")";
+            if (error == ERROR_ACCESS_DENIED)
+                throw new UnauthorizedAccessException(message);
+            throw new IOException(message, unchecked((int)0x80070000) | error);
         }
     }
 }
