@@ -24,6 +24,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # command.json, commandRegistry.json and the CommandName of every command class
+      # in commandset must list the same names.
+      - name: Check command lists agree
+        shell: pwsh
+        run: ./.github/scripts/check-commands.ps1
+
       - name: Set up .NET SDK (pinned by global.json)
         uses: actions/setup-dotnet@v4
         with:
