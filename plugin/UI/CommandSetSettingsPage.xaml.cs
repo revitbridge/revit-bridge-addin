@@ -40,7 +40,6 @@ namespace revit_mcp_plugin.UI
             {
                 commandSets.Clear();
                 string commandsDirectory = PathManager.GetCommandsDirectoryPath();
-                string registryFilePath = PathManager.GetCommandRegistryFilePath();
                 // 1. First load all command set folders, establish available command collections
                 Dictionary<string, CommandSet> availableCommandSets = new Dictionary<string, CommandSet>();
                 HashSet<string> availableCommandNames = new HashSet<string>();
@@ -148,37 +147,34 @@ namespace revit_mcp_plugin.UI
                     }
                 }
                 // 2. Load registry, update command enabled status, and clean up non-existent commands
-                if (File.Exists(registryFilePath))
+                // 命令列表经 SettingsStore 读写：只动 commands，settings（连接、配对）等其余内容原样保留。
+                // The command list is read and written through SettingsStore: only "commands"
+                // changes, settings (connection, pairing) and the rest of the file stay as they are.
+                List<CommandConfig> registryCommands = SettingsStore.Load().Commands;
+                if (registryCommands != null)
                 {
-                    string registryJson = File.ReadAllText(registryFilePath);
-                    var registry = JsonConvert.DeserializeObject<CommandRegistryJson>(registryJson);
-                    if (registry?.Commands != null)
+                    // Keep only valid commands
+                    List<CommandConfig> validCommands = new List<CommandConfig>();
+                    foreach (var registryItem in registryCommands)
                     {
-                        // Keep only valid commands
-                        List<CommandConfig> validCommands = new List<CommandConfig>();
-                        foreach (var registryItem in registry.Commands)
+                        if (registryItem != null && availableCommandNames.Contains(registryItem.CommandName))
                         {
-                            if (availableCommandNames.Contains(registryItem.CommandName))
+                            validCommands.Add(registryItem);
+                            // Update the enabled status of this command in all command sets
+                            foreach (var commandSet in availableCommandSets.Values)
                             {
-                                validCommands.Add(registryItem);
-                                // Update the enabled status of this command in all command sets
-                                foreach (var commandSet in availableCommandSets.Values)
+                                var command = commandSet.Commands.FirstOrDefault(c => c.CommandName == registryItem.CommandName);
+                                if (command != null)
                                 {
-                                    var command = commandSet.Commands.FirstOrDefault(c => c.CommandName == registryItem.CommandName);
-                                    if (command != null)
-                                    {
-                                        command.Enabled = registryItem.Enabled;
-                                    }
+                                    command.Enabled = registryItem.Enabled;
                                 }
                             }
                         }
-                        // If there are invalid commands, update the registry file
-                        if (validCommands.Count != registry.Commands.Count)
-                        {
-                            registry.Commands = validCommands;
-                            string updatedJson = JsonConvert.SerializeObject(registry, Formatting.Indented);
-                            File.WriteAllText(registryFilePath, updatedJson);
-                        }
+                    }
+                    // If there are invalid commands, update the registry file
+                    if (validCommands.Count != registryCommands.Count)
+                    {
+                        SettingsStore.SaveCommands(validCommands);
                     }
                 }
                 // 3. Add command sets to the UI collection
@@ -268,24 +264,19 @@ namespace revit_mcp_plugin.UI
         {
             try
             {
-                string registryFilePath = PathManager.GetCommandRegistryFilePath();
-                // 读取现有的注册表以保留完整的命令信息
+                // 读取现有的注册表以保留完整的命令信息（经 SettingsStore，与保存是同一条路径）
+                // Read the existing commands to keep their full entries (through SettingsStore,
+                // the same path the save below uses).
                 Dictionary<string, CommandConfig> existingCommandsDict = new Dictionary<string, CommandConfig>();
-                if (File.Exists(registryFilePath))
+                foreach (var cmd in SettingsStore.Load().Commands ?? new List<CommandConfig>())
                 {
-                    string registryJson = File.ReadAllText(registryFilePath);
-                    var existingRegistry = JsonConvert.DeserializeObject<CommandRegistryJson>(registryJson);
-                    if (existingRegistry?.Commands != null)
+                    if (cmd?.CommandName != null)
                     {
-                        foreach (var cmd in existingRegistry.Commands)
-                        {
-                            existingCommandsDict[cmd.CommandName] = cmd;
-                        }
+                        existingCommandsDict[cmd.CommandName] = cmd;
                     }
                 }
-                // 创建新的registry对象
-                CommandRegistryJson registry = new CommandRegistryJson();
-                registry.Commands = new List<CommandConfig>();
+                // 新的命令列表
+                List<CommandConfig> enabledCommands = new List<CommandConfig>();
                 // 收集所有"已启用"的命令
                 foreach (var commandSet in commandSets)
                 {
@@ -335,14 +326,14 @@ namespace revit_mcp_plugin.UI
                                     Developer = commandSetDeveloper
                                 };
                             }
-                            registry.Commands.Add(newConfig);
+                            enabledCommands.Add(newConfig);
                         }
                     }
                 }
                 // 构建摘要以显示
                 string enabledFeaturesText = "";
-                int enabledCount = registry.Commands.Count;
-                foreach (var command in registry.Commands)
+                int enabledCount = enabledCommands.Count;
+                foreach (var command in enabledCommands)
                 {
                     string commandSetName = commandSets
                         .FirstOrDefault(cs => cs.Commands.Any(c => c.CommandName == command.CommandName))?.Name ?? "Unknown";
@@ -351,9 +342,10 @@ namespace revit_mcp_plugin.UI
                         : "";
                     enabledFeaturesText += $"• {commandSetName}: {command.CommandName}\n";
                 }
-                // 序列化并保存到文件
-                string json = JsonConvert.SerializeObject(registry, Formatting.Indented);
-                File.WriteAllText(registryFilePath, json);
+                // 只替换 commands；settings（连接、配对）与文件其余内容原样保留
+                // Replace only the commands; settings (connection, pairing) and the rest of the
+                // file stay as they are.
+                SettingsStore.SaveCommands(enabledCommands);
                 MessageBox.Show($"Command set settings successfully saved!\n\nEnabled {enabledCount} commands:\n{enabledFeaturesText}",
                               "Settings Saved", MessageBoxButton.OK, MessageBoxImage.Information);
             }
@@ -386,11 +378,6 @@ namespace revit_mcp_plugin.UI
         public List<CommandConfig> Commands { get; set; } = new List<CommandConfig>();
     }
     // Configuration files
-    public class CommandRegistryJson
-    {
-        public List<CommandConfig> Commands { get; set; } = new List<CommandConfig>();
-    }
-
     public class CommandJson
     {
         public string Name { get; set; }

@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Threading;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using RevitMCPSDK.API.Interfaces;
 using revit_mcp_plugin.Utils;
 
@@ -76,6 +78,48 @@ namespace revit_mcp_plugin.Configuration
                 System.Diagnostics.Trace.WriteLine($"Failed to write settings: {ex.Message}");
                 return false;
             }
+        }
+
+        /// <summary>
+        /// <para>只替换 commands 数组；文件里的其他内容（settings，以及本版本不认识的属性）原样保留。
+        /// 命令集页面用它保存，避免把连接设置与配对一起抹掉。</para>
+        /// <para>Replace the commands array and keep everything else in the file as it is
+        /// (settings, and properties this version does not know). The Command sets page saves
+        /// through this, so saving it no longer wipes the connection settings and the pairing.</para>
+        /// </summary>
+        /// <exception cref="InvalidDataException">The file holds JSON that is not an object; it is left unchanged.</exception>
+        /// <exception cref="JsonException">The file is not valid JSON; it is left unchanged.</exception>
+        public static void SaveCommands(IEnumerable<CommandConfig> commands)
+        {
+            lock (FileLock)
+            {
+                string configPath = PathManager.GetCommandRegistryFilePath();
+                string existing = File.Exists(configPath) ? File.ReadAllText(configPath) : null;
+                WriteAllTextAtomically(configPath, ReplaceCommands(existing, commands), overwrite: true);
+            }
+        }
+
+        /// <summary>
+        /// <para>SaveCommands 的文本核心：输入原文件内容，返回只换了 "commands" 的新内容。</para>
+        /// <para>Text core of <see cref="SaveCommands"/>: takes the file's text and returns it
+        /// with only "commands" replaced. Other properties keep their values and order; date-like
+        /// strings stay strings. Empty input starts a new object.</para>
+        /// </summary>
+        public static string ReplaceCommands(string registryJson, IEnumerable<CommandConfig> commands)
+        {
+            JObject root = new JObject();
+            if (!string.IsNullOrWhiteSpace(registryJson))
+            {
+                var token = JsonConvert.DeserializeObject<JToken>(registryJson,
+                    new JsonSerializerSettings { DateParseHandling = DateParseHandling.None });
+                root = token as JObject;
+                if (root == null)
+                    throw new InvalidDataException(
+                        "commandRegistry.json does not contain a JSON object, so it was left unchanged.");
+            }
+
+            root["commands"] = JArray.FromObject(commands ?? new List<CommandConfig>());
+            return root.ToString(Formatting.Indented);
         }
 
         /// <summary>
