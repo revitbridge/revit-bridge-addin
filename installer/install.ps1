@@ -728,58 +728,68 @@ try {
     # Report
     # ---------------------------------------------------------------------------
 
-    $mainDllDestination = Join-Path $pluginDestination "RevitMCPPlugin.dll"
-    $commandDllDestination = Join-Path $pluginDestination "Commands\RevitMCPCommandSet\$RevitVersion\RevitMCPCommandSet.dll"
-    if (-not (Test-Path -LiteralPath $commandDllDestination)) {
-        Write-Warning "Command set for Revit $RevitVersion not found at $commandDllDestination. Only the add-in shell was installed."
-    }
+    # The add-in is installed at this point. Nothing below may turn that into a
+    # failure: a problem with the summary is a warning.
+    try {
+        $mainDllDestination = Join-Path $pluginDestination "RevitMCPPlugin.dll"
+        $commandDllDestination = Join-Path $pluginDestination "Commands\RevitMCPCommandSet\$RevitVersion\RevitMCPCommandSet.dll"
+        if (-not (Test-Path -LiteralPath $commandDllDestination)) {
+            Write-Warning "Command set for Revit $RevitVersion not found at $commandDllDestination. Only the add-in shell was installed."
+        }
 
-    # Other manifests that load the same add-in class: upstream mcp-servers-for-revit
-    # or an older copy of this add-in. They use a different ClientId and folder, so
-    # they can coexist, but the user should know they are there.
-    $manifestRoots = @(
-        $addinsRoot,
-        (Join-Path $env:ProgramData "Autodesk\Revit\Addins\$RevitVersion")
-    ) | Select-Object -Unique
-    $otherManifests = @()
-    foreach ($manifestRoot in $manifestRoots) {
-        if (-not (Test-Path -LiteralPath $manifestRoot)) { continue }
-        foreach ($manifest in Get-ChildItem -LiteralPath $manifestRoot -Filter "*.addin" -File -ErrorAction SilentlyContinue) {
-            if ($manifest.FullName -eq $addinDestination) { continue }
-            if (Select-String -LiteralPath $manifest.FullName -SimpleMatch $addinClassName -Encoding UTF8 -Quiet) {
-                $otherManifests += $manifest.FullName
+        # Other manifests that load the same add-in class: upstream mcp-servers-for-revit
+        # or an older copy of this add-in. They use a different ClientId and folder, so
+        # they can coexist, but the user should know they are there.
+        $manifestRoots = @(
+            $addinsRoot,
+            (Join-Path $env:ProgramData "Autodesk\Revit\Addins\$RevitVersion")
+        ) | Select-Object -Unique
+        $otherManifests = @()
+        foreach ($manifestRoot in $manifestRoots) {
+            if (-not (Test-Path -LiteralPath $manifestRoot)) { continue }
+            foreach ($manifest in Get-ChildItem -LiteralPath $manifestRoot -Filter "*.addin" -File -ErrorAction SilentlyContinue) {
+                if ($manifest.FullName -eq $addinDestination) { continue }
+                try {
+                    if (Select-String -LiteralPath $manifest.FullName -SimpleMatch $addinClassName -Encoding UTF8 -Quiet) {
+                        $otherManifests += $manifest.FullName
+                    }
+                } catch {
+                    Write-Warning "Could not read $($manifest.FullName) to check whether it loads the same add-in: $($_.Exception.Message)"
+                }
             }
         }
-    }
 
-    Write-Host ""
-    Write-Host "Installed to:        $pluginDestination"
-    Write-Host "Manifest:            $addinDestination"
-    Write-Host "Source:              $sourceLabel"
-    Write-Host "Mode:                $effectiveMode$modeSource"
-    if ($effectiveMode -eq "remote") {
-        if ([string]::IsNullOrWhiteSpace($deviceId) -or [string]::IsNullOrWhiteSpace($effectiveToken)) {
-            Write-Host ("Server:              " + "$Server (not paired yet)".Trim())
+        Write-Host ""
+        Write-Host "Installed to:        $pluginDestination"
+        Write-Host "Manifest:            $addinDestination"
+        Write-Host "Source:              $sourceLabel"
+        Write-Host "Mode:                $effectiveMode$modeSource"
+        if ($effectiveMode -eq "remote") {
+            if ([string]::IsNullOrWhiteSpace($deviceId) -or [string]::IsNullOrWhiteSpace($effectiveToken)) {
+                Write-Host ("Server:              " + "$Server (not paired yet)".Trim())
+            } else {
+                Write-Host "Server:              $wsUrl"
+                Write-Host "Device:              $deviceId"
+            }
         } else {
-            Write-Host "Server:              $wsUrl"
-            Write-Host "Device:              $deviceId"
+            Write-Host "TCP endpoint:        127.0.0.1:$existingPort"
         }
-    } else {
-        Write-Host "TCP endpoint:        127.0.0.1:$existingPort"
-    }
-    Write-Host "Confirm each run:    $existingConfirmEachRun"
-    Write-Host "Remote code allowed: $effectiveAllowRemoteCode"
-    Write-Host "RevitMCPPlugin.dll SHA-256:     $(Get-FileSha256 $mainDllDestination)"
-    Write-Host "RevitMCPCommandSet.dll SHA-256: $(Get-FileSha256 $commandDllDestination)"
-    if ($otherManifests.Count -gt 0) {
-        Write-Warning "Other manifests load the same add-in class ($addinClassName):"
-        foreach ($manifestPath in $otherManifests) {
-            Write-Warning "  $manifestPath"
+        Write-Host "Confirm each run:    $existingConfirmEachRun"
+        Write-Host "Remote code allowed: $effectiveAllowRemoteCode"
+        Write-Host "RevitMCPPlugin.dll SHA-256:     $(Get-FileSha256 $mainDllDestination)"
+        Write-Host "RevitMCPCommandSet.dll SHA-256: $(Get-FileSha256 $commandDllDestination)"
+        if ($otherManifests.Count -gt 0) {
+            Write-Warning "Other manifests load the same add-in class ($addinClassName):"
+            foreach ($manifestPath in $otherManifests) {
+                Write-Warning "  $manifestPath"
+            }
+            Write-Warning "They can coexist with revit-bridge (different ClientId and folder). If the 'Revit MCP Plugin' ribbon panel is missing or duplicated, remove one of them."
         }
-        Write-Warning "They can coexist with revit-bridge (different ClientId and folder). If the 'Revit MCP Plugin' ribbon panel is missing or duplicated, remove one of them."
+        Write-Host ""
+        Write-Host "Start Revit $RevitVersion, then click 'Revit MCP Switch' on the 'Revit MCP Plugin' ribbon panel."
+    } catch {
+        Write-Warning "The add-in was installed, but the summary could not be completed: $($_.Exception.Message)"
     }
-    Write-Host ""
-    Write-Host "Start Revit $RevitVersion, then click 'Revit MCP Switch' on the 'Revit MCP Plugin' ribbon panel."
 } finally {
     $ErrorActionPreference = $callerErrorActionPreference
     $ProgressPreference = $callerProgressPreference
