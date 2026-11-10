@@ -574,6 +574,7 @@ try {
     $wsUrl = $existingWsUrl
     $deviceId = $existingDeviceId
     $effectiveToken = $existingToken
+    $notPairedWarned = $false
 
     # In local mode a non-empty token is the TCP pre-shared secret that every local
     # call must carry, which a device token from pairing is not: carrying it over
@@ -591,12 +592,21 @@ try {
         Write-Warning "Switched from remote to local mode: the device token of the pairing ($deviceId) was not kept, because in local mode it would lock the TCP port.$remoteCodeNote To use the bridge server again, pair again: re-run with -Mode remote -Server https://<host> -Pair XXXX-XXXX, or enter a new code in Settings > Connection."
     }
 
+    # The other way round: a local install's token is its TCP secret, not a device
+    # token, so it is not carried into remote mode; without -Pair the Revit is then
+    # simply not paired yet.
+    if ($effectiveMode -eq "remote" -and $existingMode -ne "remote" -and -not [string]::IsNullOrEmpty($existingToken) -and -not $pairGiven) {
+        $effectiveToken = ""
+        $notPairedWarned = $true
+        Write-Warning "Switched from local to remote mode: the local TCP secret (token) was not kept, because it is not a device token. This Revit is not paired yet: re-run with -Server https://<host> -Pair XXXX-XXXX, or enter a pairing code in Settings > Connection."
+    }
+
     if ($pairGiven) {
         $paired = Invoke-PairingRedeem -Server $Server -Code $Pair
         $deviceId = $paired.DeviceId
         $effectiveToken = $paired.Token
         $wsUrl = $paired.WsUrl
-    } elseif ($effectiveMode -eq "remote") {
+    } elseif ($effectiveMode -eq "remote" -and -not $notPairedWarned) {
         if ([string]::IsNullOrWhiteSpace($deviceId) -or [string]::IsNullOrWhiteSpace($effectiveToken) -or [string]::IsNullOrWhiteSpace($wsUrl)) {
             Write-Warning "This Revit is not paired yet. Re-run with -Pair XXXX-XXXX, or enter a pairing code in Settings > Connection."
         } else {
