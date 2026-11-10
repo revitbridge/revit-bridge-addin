@@ -116,7 +116,7 @@ function Get-ReleaseSource {
     Invoke-WebRequest -Uri $sumsAsset.browser_download_url -OutFile $sumsPath -Headers @{ "User-Agent" = $userAgent } -UseBasicParsing
 
     $expected = $null
-    foreach ($line in Get-Content -LiteralPath $sumsPath) {
+    foreach ($line in Get-Content -LiteralPath $sumsPath -Encoding UTF8) {
         if ($line -match '^\s*([0-9A-Fa-f]{64})\s+\*?(.+?)\s*$' -and $Matches[2] -eq $zipAsset.name) {
             $expected = $Matches[1].ToLowerInvariant()
             break
@@ -154,7 +154,17 @@ function Resolve-SourceLayout {
     }
     $manifest = $manifests[0]
 
-    [xml]$xml = Get-Content -LiteralPath $manifest.FullName -Raw
+    # XmlReader decodes the file by its own BOM / XML declaration. A text read
+    # first would decode it in the ANSI code page under Windows PowerShell 5.1.
+    $readerSettings = New-Object System.Xml.XmlReaderSettings
+    $readerSettings.DtdProcessing = [System.Xml.DtdProcessing]::Prohibit
+    $xml = New-Object System.Xml.XmlDocument
+    $reader = [System.Xml.XmlReader]::Create($manifest.FullName, $readerSettings)
+    try {
+        $xml.Load($reader)
+    } finally {
+        $reader.Close()
+    }
     $addIn = $xml.RevitAddIns.AddIn
     if ($null -eq $addIn) {
         throw "$($manifest.Name) is not a Revit add-in manifest."
@@ -327,7 +337,10 @@ Copy-Item -LiteralPath $layout.Manifest.FullName -Destination $addinDestination 
 # ---------------------------------------------------------------------------
 
 $registryDestination = Join-Path $pluginDestination "Commands\commandRegistry.json"
-$config = Get-Content -LiteralPath $registryDestination -Raw | ConvertFrom-Json
+# Every text file is read as UTF-8 explicitly (a BOM is still recognised):
+# Windows PowerShell 5.1 otherwise decodes a file without BOM in the ANSI code
+# page, which on Chinese Windows (936) destroys every non-ASCII character.
+$config = Get-Content -LiteralPath $registryDestination -Raw -Encoding UTF8 | ConvertFrom-Json
 
 # Carry the previous pairing over an update: deviceId, token and wsUrl belong
 # to this machine, not to the package.
@@ -338,7 +351,7 @@ $existingConfirmEachRun = $true
 $existingAllowRemoteCode = $false
 if ($null -ne $previousRegistry) {
     try {
-        $previous = Get-Content -LiteralPath $previousRegistry -Raw | ConvertFrom-Json
+        $previous = Get-Content -LiteralPath $previousRegistry -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($null -ne $previous.settings) {
             if ($null -ne $previous.settings.token) { $existingToken = [string]$previous.settings.token }
             if ($null -ne $previous.settings.deviceId) { $existingDeviceId = [string]$previous.settings.deviceId }
@@ -403,7 +416,10 @@ if ($null -eq $config.settings) {
 } else {
     $config.settings = $settings
 }
-$config | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $registryDestination -Encoding UTF8
+# UTF-8 without BOM on both 5.1 and 7, like the shipped file and the add-in's own
+# writes (Set-Content -Encoding UTF8 adds a BOM on 5.1 only).
+$registryJson = $config | ConvertTo-Json -Depth 20
+[IO.File]::WriteAllText($registryDestination, $registryJson, (New-Object System.Text.UTF8Encoding($false)))
 
 # ---------------------------------------------------------------------------
 # Report
@@ -427,7 +443,7 @@ foreach ($manifestRoot in $manifestRoots) {
     if (-not (Test-Path -LiteralPath $manifestRoot)) { continue }
     foreach ($manifest in Get-ChildItem -LiteralPath $manifestRoot -Filter "*.addin" -File -ErrorAction SilentlyContinue) {
         if ($manifest.FullName -eq $addinDestination) { continue }
-        if (Select-String -LiteralPath $manifest.FullName -SimpleMatch $addinClassName -Quiet) {
+        if (Select-String -LiteralPath $manifest.FullName -SimpleMatch $addinClassName -Encoding UTF8 -Quiet) {
             $otherManifests += $manifest.FullName
         }
     }
