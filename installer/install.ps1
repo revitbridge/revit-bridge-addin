@@ -83,11 +83,12 @@
     Revit year(s) to install for: one year (-RevitVersion 2026), several
     (-RevitVersion 2024,2026), or "installed": every Revit installed on this
     machine (read from HKLM\SOFTWARE\Autodesk\Revit) in a year this installer
-    supports (2020, 2021, 2023-2027) that the release has a package for.
+    supports (2020, 2021, 2023-2026) that the release has a package for.
     Default: the same as "installed", except that when no Revit at all is found
     in the registry it installs for 2026, as earlier installers did; Revit
-    installed only in unsupported years is an error. With -Source <add-in tree>
-    the default is that tree's own year.
+    installed only in unsupported years is an error. A year that is not
+    supported (2022, 2027, 2019 and earlier) is refused. With -Source <add-in
+    tree> the default is that tree's own year.
 
 .PARAMETER Repo
     GitHub repository to download releases from. Forks set this to their own
@@ -127,12 +128,14 @@ param(
     # Releases before v0.4.0 carry a single revit-bridge-addin-<tag>.zip, built for this
     # year only. It is also the year installed when no Revit is found in the registry.
     $singlePackageYear = "2026"
-    # The Revit years this add-in is built for (REVIT_YEARS in .github/workflows/build.yml,
-    # README "Supported Revit years"). Years found in the registry are filtered to these.
-    $supportedYears = @("2020", "2021", "2023", "2024", "2025", "2026", "2027")
+    # The Revit years this add-in is built and released for (REVIT_YEARS in
+    # .github/workflows/build.yml, README "Supported Revit years"). Years found in the
+    # registry are filtered to these, and another year is refused. Release R27 builds, but
+    # Revit 2027 is not supported.
+    $supportedYears = @("2020", "2021", "2023", "2024", "2025", "2026")
     # Years whose package is compiled but has not been loaded in a real Revit (README,
     # "Supported Revit years"). Keep both lists the same.
-    $notLoadTestedYears = @("2020", "2027")
+    $notLoadTestedYears = @("2020")
     # The add-in folder under Addins\<year>\ (AddinFolderName), to tell installed years apart
     # before a package is read.
     $defaultFolderName = "revit-bridge"
@@ -1099,6 +1102,10 @@ param(
         }
 
         $request = ConvertTo-RevitYearRequest -Values $RevitVersion
+        $unsupportedGiven = @($request.Years | Where-Object { $supportedYears -notcontains $_ })
+        if ($unsupportedGiven.Count -gt 0) {
+            throw "This installer does not support Revit $($unsupportedGiven -join ', '). Supported Revit years: $($supportedYears -join ', '). Nothing was installed."
+        }
 
         # ---------------------------------------------------------------------------
         # What kind of source, and which Revit years
@@ -1137,14 +1144,17 @@ param(
             if ($request.Years.Count -gt 0 -and ($request.Years.Count -ne 1 -or $request.Years[0] -ne $treeYear)) {
                 throw "$sourcePath is the add-in for Revit $treeYear; it cannot be installed for Revit $($request.Years -join ', '). Use the build or package for that year, or -Source release."
             }
+            if ($supportedYears -notcontains $treeYear) {
+                throw "$sourcePath is the add-in for Revit $treeYear, which this installer does not support. Supported Revit years: $($supportedYears -join ', '). Nothing was installed."
+            }
             $targets = @($treeYear)
             $targetsFrom = "source"
         } elseif ($request.Years.Count -gt 0) {
             $targets = @($request.Years)
             $targetsFrom = "given"
         } else {
-            # Only the years this add-in is built for are targets; another installed year (2022,
-            # 2019 and earlier) is named once and plays no further part.
+            # Only the supported years are targets; another installed year (2022, 2027, 2019 and
+            # earlier) is named once and plays no further part.
             $detectedAll = @(Get-InstalledRevitYears)
             $detected = @($detectedAll | Where-Object { $supportedYears -contains $_ })
             $unsupported = @($detectedAll | Where-Object { $supportedYears -notcontains $_ })
@@ -1152,13 +1162,13 @@ param(
                 Write-Host "Revit installed on this machine: $($detected -join ', ')"
             }
             if ($unsupported.Count -gt 0) {
-                Write-Host "Left out, this add-in is not built for them: Revit $($unsupported -join ', ') (supported: $($supportedYears -join ', '))."
+                Write-Host "Left out, not supported by this installer: Revit $($unsupported -join ', ') (supported: $($supportedYears -join ', '))."
             }
             if ($detected.Count -gt 0) {
                 $targets = $detected
                 $targetsFrom = "installed"
             } elseif ($unsupported.Count -gt 0) {
-                throw "Revit is installed here only in years this add-in is not built for: Revit $($unsupported -join ', '). Supported Revit years: $($supportedYears -join ', '). Nothing was installed."
+                throw "Revit is installed here only in years this installer does not support: Revit $($unsupported -join ', '). Supported Revit years: $($supportedYears -join ', '). Nothing was installed."
             } elseif ($request.Installed) {
                 throw "No Revit installation was found in the registry (HKLM\SOFTWARE\Autodesk\Revit). Name the Revit year instead, e.g. -RevitVersion 2026."
             } else {

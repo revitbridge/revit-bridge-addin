@@ -1,6 +1,6 @@
 # revit-bridge-addin
 
-Revit add-in (C#, WPF) for Revit 2020, 2021 and 2023-2027: .NET Framework 4.8 for 2020-2024, .NET 8 for 2025-2026, .NET 10 for 2027. One code base, one build configuration per year. Fork of mcp-servers-for-revit; only `plugin/` and `commandset/` are kept.
+Revit add-in (C#, WPF) for Revit 2020, 2021 and 2023-2026: .NET Framework 4.8 for 2020-2024, .NET 8 for 2025-2026. One code base, one build configuration per year. `Release R27` (.NET 10) builds but is not released, and the installer does not support Revit 2027; keep it building. Fork of mcp-servers-for-revit; only `plugin/` and `commandset/` are kept.
 
 ## Build
 
@@ -11,9 +11,9 @@ dotnet build plugin -c "Release R26"
 dotnet build commandset -c "Release R26"
 ```
 
-Configurations: `Release R<yy>` and `Debug R<yy>` for R20, R21, R23, R24, R25, R26, R27 (no R22). Build order matters: `commandset` copies its output into `plugin\bin\AddIn <year> Release R<yy>\revit-bridge\Commands\`. `Debug R<yy>` also copies into `%APPDATA%\Autodesk\Revit\Addins\<year>\`; point `APPDATA` elsewhere to avoid that.
+Configurations: `Release R<yy>` and `Debug R<yy>` for R20, R21, R23, R24, R25, R26, R27 (no R22; R27 is built only, not released). Build order matters: `commandset` copies its output into `plugin\bin\AddIn <year> Release R<yy>\revit-bridge\Commands\`. `Debug R<yy>` also copies into `%APPDATA%\Autodesk\Revit\Addins\<year>\`; point `APPDATA` elsewhere to avoid that.
 
-The years built and released are listed once in `.github/workflows/build.yml` (`REVIT_YEARS`); a year there needs its configuration in both projects and the solution, and `$supportedYears` in `installer/install.ps1` must list the same years. README's "Supported Revit years" says which were load-tested; `$notLoadTestedYears` in the installer must name the same not-load-tested years. CI jobs: `checks`, `build` (matrix per year), `package` (SHA256SUMS.txt, check-release, artifact; read-only) and `publish` (`v*` tags only, the only job with `contents: write`; never give a job that runs for a pull request a write token).
+The years built and released are listed once in `.github/workflows/build.yml` (`REVIT_YEARS`); a year there needs its configuration in both projects and the solution, and `$supportedYears` in `installer/install.ps1` must list the same years (2027 is in neither). README's "Supported Revit years" says which were load-tested; `$notLoadTestedYears` in the installer must name the same not-load-tested years. CI jobs: `checks`, `build` (matrix per year), `package` (SHA256SUMS.txt, check-release, artifact; read-only) and `publish` (`v*` tags only, the only job with `contents: write`; never give a job that runs for a pull request a write token).
 
 ## Test
 

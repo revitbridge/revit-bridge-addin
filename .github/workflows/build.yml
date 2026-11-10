@@ -13,7 +13,8 @@ permissions:
 env:
   # The Revit years built and released, the only place they are listed in this workflow.
   # A year here needs Release R<yy> in both projects (README, "Supported Revit years").
-  REVIT_YEARS: "2020 2021 2023 2024 2025 2026 2027"
+  # Release R27 builds but is not released: Revit 2027 is not supported yet.
+  REVIT_YEARS: "2020 2021 2023 2024 2025 2026"
 
 jobs:
   checks:

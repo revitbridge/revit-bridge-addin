@@ -2,7 +2,7 @@
 
 Revit add-in for [revit-bridge](https://github.com/revitbridge/revit-bridge). It exposes a small JSON-RPC surface (26 commands, including dynamic C# execution) that the `revit-bridge` MCP server or a [revit-bridge-web](https://github.com/revitbridge/revit-bridge-web) host drives.
 
-Revit 2020、2021、2023–2027 插件：本地 TCP 或远程 WebSocket 两种模式，供 `revit-bridge` MCP 服务器或演示宿主调用。每个 Revit 年份单独安装、单独配置、单独配对。
+Revit 2020、2021、2023-2026 插件：本地 TCP 或远程 WebSocket 两种模式，供 `revit-bridge` MCP 服务器或演示宿主调用。每个 Revit 年份单独安装、单独配置、单独配对。
 
 Fork of [mcp-servers-for-revit](https://github.com/mcp-servers-for-revit/mcp-servers-for-revit) (MIT). Only `plugin/` and `commandset/` were kept; see [NOTICE](NOTICE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
@@ -17,15 +17,15 @@ Fork of [mcp-servers-for-revit](https://github.com/mcp-servers-for-revit/mcp-ser
 | 2024 | .NET Framework 4.8 | load-tested |
 | 2025 | .NET 8 | load-tested |
 | 2026 | .NET 8 (also runs on 2026.5, which uses .NET 10) | load-tested on 2026.5 |
-| 2027 | .NET 10 | built, not load-tested |
+| 2027 | .NET 10 | not supported: the `Release R27` configuration builds, but no package is released and the installer refuses Revit 2027 |
 
-"Load-tested" means the package of that year was installed with the installer and loaded in a real Revit of that year: the add-in started, Settings saved, the bridge answered over TCP, and a snippet compiled and ran. A year marked "built, not load-tested" compiles without warnings but has not been run in Revit; use it at your own risk and report what you find.
+"Load-tested" means the package of that year was installed with the installer and loaded in a real Revit of that year: the add-in started, Settings saved, the bridge answered over TCP, and a snippet compiled and ran. A year marked "built, not load-tested" compiles without warnings but has not been run in Revit; use it at your own risk and report what you find. The installer installs the supported years only (2020, 2021, 2023-2026); an installed Revit of another year is left out.
 
 Every Revit year is its own install: its own folder under `%APPDATA%\Autodesk\Revit\Addins\<year>\`, its own settings, port and log, and - for remote mode - its own pairing. To the bridge server each Revit year is a separate device.
 
 ## Install
 
-Requirements: Windows x64, one of the Revit years above, PowerShell 5.1 or later. Close the Revit of each year you install for; a Revit of a year that is open is skipped (the installer says so at the end), other years are installed.
+Requirements: Windows x64, one of the supported Revit years above, PowerShell 5.1 or later. Close the Revit of each year you install for; a Revit of a year that is open is skipped (the installer says so at the end), other years are installed.
 
 One line, for every supported Revit installed on this machine (read from the registry; when no Revit at all is found, Revit 2026), local mode on a fresh install (Revit listens on `127.0.0.1:18080`, no token needed):
 
@@ -40,7 +40,7 @@ One Revit year, or several:
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/revitbridge/revit-bridge-addin/main/installer/install.ps1))) -RevitVersion 2024,2026
 ```
 
-`-RevitVersion installed` says "every supported Revit installed on this machine" explicitly (and fails when none is found instead of falling back to 2026). Installed Revit years the add-in is not built for (2022, or 2019 and earlier) are left out with one line saying so; when Revit is installed only in such years, the installer stops with an error that names them and the supported years (the 2026 fallback is only for a machine with no Revit in the registry at all). At the end the installer lists each year as installed, skipped or not installed, with the reason; when any year was not installed it ends with an error (exit code 1) that names them. One year failing does not undo or stop the others.
+`-RevitVersion installed` says "every supported Revit installed on this machine" explicitly (and fails when none is found instead of falling back to 2026). Installed Revit years that are not supported (2022, 2027, or 2019 and earlier) are left out with one line saying so, also while a Revit of such a year is open; `-RevitVersion` with such a year is refused; when Revit is installed only in such years, the installer stops with an error that names them and the supported years (the 2026 fallback is only for a machine with no Revit in the registry at all). At the end the installer lists each year as installed, skipped or not installed, with the reason; when any year was not installed it ends with an error (exit code 1) that names them. One year failing does not undo or stop the others.
 
 Remote mode (Revit connects out to a bridge server; nothing is exposed on your machine). Click "Pair a Revit" on the site first to get a pairing code. A code pairs one Revit year (each Revit year is a separate device); for a second year, get a second code and run the command again with that year. The command the site gives you works as it is, without a year:
 
@@ -103,9 +103,9 @@ Logs: `%APPDATA%\Autodesk\Revit\Addins\<year>\revit-bridge\Logs\mcp_YYYYMMDD.log
 
 ## Build
 
-Requirements: the .NET SDK pinned in [global.json](global.json) (10.0.403, `rollForward: latestFeature`; a .NET 10 SDK is needed for Revit 2027 and builds the .NET Framework 4.8 and .NET 8 years too), Windows (WPF). No Revit SDK is needed; Revit API packages come from NuGet.
+Requirements: the .NET SDK pinned in [global.json](global.json) (10.0.403, `rollForward: latestFeature`; a .NET 10 SDK is needed for the `Release R27` configuration and builds the .NET Framework 4.8 and .NET 8 years too), Windows (WPF). No Revit SDK is needed; Revit API packages come from NuGet.
 
-One configuration per Revit year, `Release R<yy>`: `R20`, `R21`, `R23`, `R24`, `R25`, `R26`, `R27`. For example Revit 2024:
+One configuration per Revit year, `Release R<yy>`: `R20`, `R21`, `R23`, `R24`, `R25`, `R26`, and `R27`, which builds but is not released or supported by the installer. For example Revit 2024:
 
 ```powershell
 dotnet build plugin -c "Release R24"
@@ -124,7 +124,7 @@ AddIn 2024 Release R24\
         +-- RevitMCPCommandSet\{command.json, 2024\RevitMCPCommandSet.dll + Roslyn}
 ```
 
-Install your own build with `.\installer\install.ps1 -Source "plugin\bin\AddIn 2024 Release R24"` (it installs for the year the tree was built for). CI ([build.yml](.github/workflows/build.yml)) builds every year with the same two commands (job `build`), checks the set of packages and `SHA256SUMS.txt` (job `package`, read-only) and, on a `v*` tag only, publishes one `revit-bridge-addin-<tag>-revit<year>.zip` per year plus one `SHA256SUMS.txt` to Releases (job `publish`, the only one with write access). Official builds and self-builds produce the same tree.
+Install your own build with `.\installer\install.ps1 -Source "plugin\bin\AddIn 2024 Release R24"` (it installs for the year the tree was built for). CI ([build.yml](.github/workflows/build.yml)) builds every released year (2020, 2021, 2023-2026) with the same two commands (job `build`), checks the set of packages and `SHA256SUMS.txt` (job `package`, read-only) and, on a `v*` tag only, publishes one `revit-bridge-addin-<tag>-revit<year>.zip` per year plus one `SHA256SUMS.txt` to Releases (job `publish`, the only one with write access). Official builds and self-builds produce the same tree.
 
 `Debug R<yy>` additionally copies the output into `%APPDATA%\Autodesk\Revit\Addins\<year>\` (without touching an existing `commandRegistry.json`).
 
