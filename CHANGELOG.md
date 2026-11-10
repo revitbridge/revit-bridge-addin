@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+The add-in is built for Revit 2020, 2021 and 2023-2027 instead of 2026 only, and the installer installs it for several Revit years at once. Each Revit year is its own install with its own settings, port and pairing. Install over 0.3.1; the configuration format, the commands and the wire formats are unchanged.
+
+- Revit years: 2020 (.NET Framework 4.8, built but not load-tested), 2021, 2023 and 2024 (.NET Framework 4.8), 2025 and 2026 (.NET 8; the 2026 package also runs on Revit 2026.5, which uses .NET 10), 2027 (.NET 10, built but not load-tested yet). Revit 2022 is not supported. README, "Supported Revit years", says which years were tested in a real Revit; the installer warns when it installs a year that was not.
+- A release has one package per Revit year, `revit-bridge-addin-<tag>-revit<year>.zip`, and one `SHA256SUMS.txt` for all of them.
+- The installer's `-RevitVersion` takes one year, several (`-RevitVersion 2024,2026`) or `installed`. Without it, the installer installs or updates every supported Revit it finds in the registry (it used to install for 2026 only); when it finds none it installs for 2026 as before. Running the one-liner again therefore also installs the add-in for an installed Revit year that did not have it yet.
+- Every year is installed on its own, with the guarantees 0.3.1 gave one year: the settings and pairing of that year are kept, its previous install is backed up and put back if copying fails or the run is stopped. A Revit of one year that is open skips only that year, and one year that fails does not undo or stop the others. At the end the installer lists each year as installed, skipped or not installed with the reason, and exits with an error when a year was not installed.
+- `-Pair` pairs exactly one Revit year, because each Revit year is a separate device to the server: with more than one target year the installer stops before anything is downloaded or redeemed and says to pair one year at a time.
+- The installer prints one line when two local installs (of any year) use the same TCP port; it does not change ports.
+- Releases before v0.4.0 have one package, for Revit 2026: `-Tag v0.3.1 -RevitVersion 2026` still installs it, and another year on such a release is refused with a message instead of getting the 2026 build.
+- `-Source <add-in folder>` installs for the year that folder was built for and refuses another year (a 2024 build was installed into `Addins\2026` without a word). `-Source <folder>` also accepts a release's downloaded files (the zips and `SHA256SUMS.txt`), verified like a download, for an offline install.
+- A refused pairing code is no longer printed in the installer's error message.
+- `send_code_to_revit`, `check_code_in_revit` and `manage_solidified_tools` compile on the .NET Framework years too, also on Revit 2021, whose own older copy of System.Runtime.CompilerServices.Unsafe made the compiler fail before the first line was parsed (`TypeInitializationException` for `PerTypeValues`1`). Request and response shapes are the same on every year.
+- The **Settings** window no longer closes by itself a few seconds after it opens (seen on Revit 2021): its owner was guessed from the process and could be a ribbon popup, which takes its owned windows with it when it goes. It is now owned by Revit's main window.
+- On Revit 2024 and 2025 the commands no longer use `ElementId(Int32)`, which is deprecated there; element ids are unchanged.
+- `commandRegistry.json` names the command set's year folder as `{VERSION}` (`RevitMCPCommandSet/{VERSION}/RevitMCPCommandSet.dll`), which the add-in replaces with the year of the Revit it runs in; registries saved from **Settings > Command sets** already looked like this.
+- Building needs the .NET 10 SDK (`global.json`: 10.0.403). One `LangVersion` (12) and one set of `REVIT<year>_OR_GREATER` symbols for both projects (`Directory.Build.props`, `Directory.Build.targets`). New configurations `Debug R27` / `Release R27`; `R22` is gone.
+- CI builds every year in a matrix (plugin, command set, output check, package per year), then one job writes `SHA256SUMS.txt`, checks the set (`.github/scripts/check-release.ps1`) and, on a `v*` tag, publishes all packages in one GitHub Release.
+
 ## 0.3.1 (2026-11-09)
 
 Fixes three ways of losing the pairing or the connection settings, makes the installer safe on Chinese Windows and PowerShell 5.1, and hardens the add-in's settings file and connections. Install over 0.3.0; the configuration format, the command set and the wire formats are unchanged. An update switches commands turned off in Settings back on (see below).
