@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.1 (2026-11-09)
 
 Fixes three ways of losing the pairing or the connection settings, makes the installer safe on Chinese Windows and PowerShell 5.1, and hardens the add-in's settings file and connections. Install over 0.3.0; the configuration format, the command set and the wire formats are unchanged. An update switches commands turned off in Settings back on (see below).
 
