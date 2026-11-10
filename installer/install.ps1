@@ -309,7 +309,7 @@ param(
             # Same rule as the add-in's PairingClient: only 404 with error
             # "invalid_code" means the code itself was refused.
             if ($status -eq 404 -and $errorCode -ceq "invalid_code") {
-                throw "Pairing code $Code was refused (invalid, already used, or expired). Generate a new one on the site. $detail".Trim()
+                throw "The pairing code was refused (invalid, already used, or expired). Generate a new one on the site. $detail".Trim()
             }
             if ($status -eq 404) {
                 throw "$url answered 404 Not Found without a pairing-code error, so the server address is probably wrong. -Server is the site address, e.g. https://bridge.example.com. $detail".Trim()
