@@ -89,10 +89,51 @@ $registryModes = @{ "local" = "tcp"; "remote" = "websocket" }
 # Helpers
 # ---------------------------------------------------------------------------
 
+function Enable-Tls12 {
+    # Windows PowerShell 5.1 runs on .NET Framework, whose protocol list can lack
+    # TLS 1.2 (GitHub requires it). Add it without removing anything; 0
+    # (SystemDefault) already lets Windows choose, TLS 1.2 and 1.3 included.
+    # PowerShell 7 always uses the Windows defaults.
+    if ($PSVersionTable.PSEdition -eq "Core") { return }
+    try {
+        $current = [int][Net.ServicePointManager]::SecurityProtocol
+        $tls12 = [int][Net.SecurityProtocolType]::Tls12
+        if ($current -ne 0 -and ($current -band $tls12) -eq 0) {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]($current -bor $tls12)
+        }
+    } catch {
+        Write-Warning "Could not enable TLS 1.2: $($_.Exception.Message)"
+    }
+}
+
+function Get-ProxyParameter {
+    param([string]$Uri)
+    # When Windows routes this address through a proxy, name it explicitly so the
+    # logged-on user's credentials can be sent to it: -ProxyUseDefaultCredentials
+    # is only accepted together with -Proxy, on 5.1 and on 7. Without a proxy (or
+    # for localhost) nothing is added and the call is the same as before.
+    $parameters = @{}
+    try {
+        $target = [Uri]$Uri
+        if ($target.IsLoopback) { return $parameters }
+        $systemProxy = [Net.WebRequest]::GetSystemWebProxy()
+        if ($null -ne $systemProxy -and -not $systemProxy.IsBypassed($target)) {
+            $proxyUri = $systemProxy.GetProxy($target)
+            if ($null -ne $proxyUri -and $proxyUri.AbsoluteUri -ne $target.AbsoluteUri) {
+                $parameters["Proxy"] = $proxyUri.AbsoluteUri
+                $parameters["ProxyUseDefaultCredentials"] = $true
+            }
+        }
+    } catch {
+        Write-Warning "Could not read the system proxy setting for ${Uri}: $($_.Exception.Message)"
+    }
+    return $parameters
+}
+
 function Get-ReleaseSource {
     param([string]$Repo, [string]$Tag)
 
-    try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
+    Enable-Tls12
 
     if ($Tag -eq "latest") {
         $apiUrl = "https://api.github.com/repos/$Repo/releases/latest"
@@ -101,7 +142,8 @@ function Get-ReleaseSource {
     }
 
     Write-Host "Looking up release: $apiUrl"
-    $release = Invoke-RestMethod -Uri $apiUrl -Headers @{ "User-Agent" = $userAgent }
+    $apiProxy = Get-ProxyParameter -Uri $apiUrl
+    $release = Invoke-RestMethod -Uri $apiUrl -Headers @{ "User-Agent" = $userAgent } @apiProxy
 
     $zipAsset = $release.assets | Where-Object { $_.name -like "revit-bridge-addin-*.zip" } | Select-Object -First 1
     $sumsAsset = $release.assets | Where-Object { $_.name -eq "SHA256SUMS.txt" } | Select-Object -First 1
@@ -118,8 +160,10 @@ function Get-ReleaseSource {
     $sumsPath = Join-Path $workDir $sumsAsset.name
 
     Write-Host "Downloading $($zipAsset.name) ($($release.tag_name))"
-    Invoke-WebRequest -Uri $zipAsset.browser_download_url -OutFile $zipPath -Headers @{ "User-Agent" = $userAgent } -UseBasicParsing
-    Invoke-WebRequest -Uri $sumsAsset.browser_download_url -OutFile $sumsPath -Headers @{ "User-Agent" = $userAgent } -UseBasicParsing
+    $zipProxy = Get-ProxyParameter -Uri $zipAsset.browser_download_url
+    $sumsProxy = Get-ProxyParameter -Uri $sumsAsset.browser_download_url
+    Invoke-WebRequest -Uri $zipAsset.browser_download_url -OutFile $zipPath -Headers @{ "User-Agent" = $userAgent } -UseBasicParsing @zipProxy
+    Invoke-WebRequest -Uri $sumsAsset.browser_download_url -OutFile $sumsPath -Headers @{ "User-Agent" = $userAgent } -UseBasicParsing @sumsProxy
 
     $expected = $null
     foreach ($line in Get-Content -LiteralPath $sumsPath -Encoding UTF8) {
@@ -203,14 +247,15 @@ function Resolve-SourceLayout {
 function Invoke-PairingRedeem {
     param([string]$Server, [string]$Code)
 
-    try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
+    Enable-Tls12
 
     $url = $Server.TrimEnd('/') + "/api/v1/bridge/devices/redeem"
     $body = @{ code = $Code; addin_version = "installer" } | ConvertTo-Json -Compress
 
     Write-Host "Redeeming pairing code at $url"
+    $redeemProxy = Get-ProxyParameter -Uri $url
     try {
-        $reply = Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType "application/json" -Headers @{ "User-Agent" = $userAgent }
+        $reply = Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType "application/json" -Headers @{ "User-Agent" = $userAgent } @redeemProxy
     } catch {
         $failure = $_
         $response = $failure.Exception.Response
