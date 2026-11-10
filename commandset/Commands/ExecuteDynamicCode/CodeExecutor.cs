@@ -123,6 +123,8 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
         /// <param name="cancellationToken">Cancels parsing and emitting (check_code_in_revit uses a 30 s timeout).</param>
         public static CompileOutcome Compile(string code, CancellationToken cancellationToken = default(CancellationToken))
         {
+            // .NET Framework years: Roslyn's dependencies must bind before the first parse (see DependencyResolver).
+            DependencyResolver.EnsureRegistered();
             code = code ?? string.Empty;
 
             List<Assembly> referencedAssemblies = CollectReferencedAssemblies();
