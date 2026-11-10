@@ -8,7 +8,8 @@
     %APPDATA%\Autodesk\Revit\Addins\<RevitVersion>\ and writes the connection
     settings into Commands\commandRegistry.json.
 
-    One-line install (local TCP mode, nothing to configure):
+    One-line install (local TCP mode on a fresh install, nothing to configure;
+    run again to update, keeping the previous mode and pairing):
 
         irm https://raw.githubusercontent.com/revitbridge/revit-bridge-addin/main/installer/install.ps1 | iex
 
@@ -21,8 +22,11 @@
         .\installer\install.ps1 -Source "plugin\bin\AddIn 2026 Release R26"
 
 .PARAMETER Mode
-    local  - Revit listens on TCP 127.0.0.1:18080 for a local MCP server (default).
+    local  - Revit listens on TCP 127.0.0.1:18080 for a local MCP server.
     remote - Revit connects out to a WebSocket bridge server (-Server required).
+    Default: the mode of the install being updated, or local for a fresh
+    install. Port, logLevel and the pairing are kept as well. Switching a paired
+    install to local drops its device token (it would lock the TCP port).
 
 .PARAMETER Server
     Site address of the bridge server, e.g. https://bridge.example.com.
@@ -78,6 +82,8 @@ param(
 $ErrorActionPreference = "Stop"
 $addinClassName = "revit_mcp_plugin.Core.Application"
 $userAgent = "revit-bridge-addin-installer"
+# -Mode values of this script and the "mode" values in commandRegistry.json.
+$registryModes = @{ "local" = "tcp"; "remote" = "websocket" }
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -266,6 +272,18 @@ function Get-FileSha256 {
     return "(missing)"
 }
 
+function ConvertFrom-RegistryMode {
+    param([string]$Value)
+    # "websocket" -> "remote", "tcp" -> "local" (ignoring case, as the add-in
+    # does); $null for anything else.
+    foreach ($name in $registryModes.Keys) {
+        if ($registryModes[$name] -eq $Value) {
+            return $name
+        }
+    }
+    return $null
+}
+
 function Get-RevitExeYear {
     param([string]$Path)
     # The Revit year of a Revit.exe: from its file version (26.x is 2026), or, when
@@ -379,52 +397,87 @@ $registryDestination = Join-Path $pluginDestination "Commands\commandRegistry.js
 # page, which on Chinese Windows (936) destroys every non-ASCII character.
 $config = Get-Content -LiteralPath (Join-Path $layout.PluginDir "Commands\commandRegistry.json") -Raw -Encoding UTF8 | ConvertFrom-Json
 
-# Carry the previous pairing over an update: deviceId, token and wsUrl belong
-# to this machine, not to the package. Read from the install that is still in
-# place.
+# Carry the previous settings over an update: mode, deviceId, token and wsUrl
+# belong to this machine, not to the package, and so do port and logLevel.
+# Read from the install that is still in place.
+$existingMode = $null
 $existingWsUrl = ""
 $existingToken = ""
 $existingDeviceId = ""
 $existingConfirmEachRun = $true
 $existingAllowRemoteCode = $false
+$existingPort = 18080
+$existingLogLevel = "Info"
 $previousRegistry = $registryDestination
 if (Test-Path -LiteralPath $previousRegistry) {
     try {
         $previous = Get-Content -LiteralPath $previousRegistry -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($null -ne $previous.settings) {
+            if ($null -ne $previous.settings.mode) { $existingMode = ConvertFrom-RegistryMode ([string]$previous.settings.mode) }
             if ($null -ne $previous.settings.token) { $existingToken = [string]$previous.settings.token }
             if ($null -ne $previous.settings.deviceId) { $existingDeviceId = [string]$previous.settings.deviceId }
             if ($null -ne $previous.settings.wsUrl) { $existingWsUrl = [string]$previous.settings.wsUrl }
             if ($null -ne $previous.settings.confirmEachRun) { $existingConfirmEachRun = [bool]$previous.settings.confirmEachRun }
             if ($null -ne $previous.settings.allowRemoteCodeExecution) { $existingAllowRemoteCode = [bool]$previous.settings.allowRemoteCodeExecution }
+            if ($null -ne $previous.settings.port) {
+                $portNumber = 0
+                if ([int]::TryParse([string]$previous.settings.port, [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, [ref]$portNumber) -and
+                    $portNumber -ge 1 -and $portNumber -le 65535) {
+                    $existingPort = $portNumber
+                } else {
+                    Write-Warning "Ignored the previous port '$($previous.settings.port)' (not a number from 1 to 65535); using $existingPort."
+                }
+            }
+            # The add-in does not read logLevel yet; an unknown value is replaced quietly.
+            if (@("Debug", "Info", "Warning", "Error") -contains [string]$previous.settings.logLevel) {
+                $existingLogLevel = [string]$previous.settings.logLevel
+            }
         }
     } catch {
         Write-Warning "Could not read settings from the previous install: $($_.Exception.Message)"
     }
 }
 
+# -Mode wins; without it an update keeps the previous install's mode, and a
+# fresh install is local.
+if ($PSBoundParameters.ContainsKey("Mode")) {
+    $effectiveMode = $Mode
+    $modeSource = ""
+} elseif ($null -ne $existingMode) {
+    $effectiveMode = $existingMode
+    $modeSource = " (kept from the previous install)"
+} else {
+    $effectiveMode = $Mode
+    $modeSource = ""
+}
+
 $wsUrl = $existingWsUrl
 $deviceId = $existingDeviceId
 $effectiveToken = $existingToken
+
+# In local mode a non-empty token is the TCP pre-shared secret that every local
+# call must carry, which a device token from pairing is not: carrying it over
+# would refuse every call from the local MCP server. A token from a previous
+# local install is the user's own TCP secret and stays.
+if ($effectiveMode -eq "local" -and $existingMode -eq "remote" -and -not [string]::IsNullOrEmpty($existingToken)) {
+    $effectiveToken = ""
+    Write-Warning "Switched from remote to local mode: the device token of the pairing ($deviceId) was not kept, because in local mode it would lock the TCP port. To use the bridge server again, pair again: re-run with -Mode remote -Server https://<host> -Pair XXXX-XXXX, or enter a new code in Settings > Connection."
+}
 
 if (-not [string]::IsNullOrWhiteSpace($Pair)) {
     $paired = Invoke-PairingRedeem -Server $Server -Code $Pair
     $deviceId = $paired.DeviceId
     $effectiveToken = $paired.Token
     $wsUrl = $paired.WsUrl
-} elseif ($Mode -eq "remote") {
-    if ([string]::IsNullOrWhiteSpace($deviceId) -or [string]::IsNullOrWhiteSpace($wsUrl)) {
+} elseif ($effectiveMode -eq "remote") {
+    if ([string]::IsNullOrWhiteSpace($deviceId) -or [string]::IsNullOrWhiteSpace($effectiveToken) -or [string]::IsNullOrWhiteSpace($wsUrl)) {
         Write-Warning "This Revit is not paired yet. Re-run with -Pair XXXX-XXXX, or enter a pairing code in Settings > Connection."
     } else {
         Write-Host "Kept the pairing from the previous install ($deviceId)."
     }
 }
 
-if ($Mode -eq "remote") {
-    $modeValue = "websocket"
-} else {
-    $modeValue = "tcp"
-}
+$modeValue = $registryModes[$effectiveMode]
 
 # Pairing is what authorises a server to run ad-hoc code on this machine, so
 # -Pair switches allowRemoteCodeExecution on unless the caller said otherwise.
@@ -440,8 +493,8 @@ if ($PSBoundParameters.ContainsKey("AllowRemoteCode")) {
 }
 
 $settings = [pscustomobject]@{
-    logLevel = "Info"
-    port = 18080
+    logLevel = $existingLogLevel
+    port = $existingPort
     mode = $modeValue
     wsUrl = $wsUrl
     deviceId = $deviceId
@@ -570,16 +623,16 @@ Write-Host ""
 Write-Host "Installed to:        $pluginDestination"
 Write-Host "Manifest:            $addinDestination"
 Write-Host "Source:              $sourceLabel"
-Write-Host "Mode:                $Mode"
-if ($Mode -eq "remote") {
-    if ([string]::IsNullOrWhiteSpace($deviceId)) {
-        Write-Host "Server:              $Server (not paired yet)"
+Write-Host "Mode:                $effectiveMode$modeSource"
+if ($effectiveMode -eq "remote") {
+    if ([string]::IsNullOrWhiteSpace($deviceId) -or [string]::IsNullOrWhiteSpace($effectiveToken)) {
+        Write-Host ("Server:              " + "$Server (not paired yet)".Trim())
     } else {
         Write-Host "Server:              $wsUrl"
         Write-Host "Device:              $deviceId"
     }
 } else {
-    Write-Host "TCP endpoint:        127.0.0.1:18080"
+    Write-Host "TCP endpoint:        127.0.0.1:$existingPort"
 }
 Write-Host "Confirm each run:    $existingConfirmEachRun"
 Write-Host "Remote code allowed: $effectiveAllowRemoteCode"
