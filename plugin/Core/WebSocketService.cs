@@ -156,7 +156,13 @@ namespace revit_mcp_plugin.Core
             _unpairedDeviceId = null;
             _cts = new CancellationTokenSource();
 
-            _workerThread = new Thread(WorkerLoop)
+            // 每个工作线程只看自己启动时的 token：Stop 取消它，之后的 Start 换新的 token，
+            // 旧线程不会因为 _isRunning 又变成 true 而继续运行。
+            // Each worker only looks at the token it was started with: Stop cancels it and a
+            // later Start creates a new one, so an old worker never carries on because
+            // _isRunning became true again.
+            CancellationToken workerToken = _cts.Token;
+            _workerThread = new Thread(() => WorkerLoop(workerToken))
             {
                 IsBackground = true,
                 Name = "WebSocketService"
@@ -199,22 +205,24 @@ namespace revit_mcp_plugin.Core
 
         // ── Worker loop with auto-reconnect ─────────────────────────────
 
-        private void WorkerLoop()
+        private void WorkerLoop(CancellationToken stopToken)
         {
-            while (_isRunning)
+            while (!stopToken.IsCancellationRequested)
             {
                 try
                 {
                     // Avoid AggregateException masking the actual HTTP/WebSocket error.
-                    ConnectAndListen().GetAwaiter().GetResult();
+                    ConnectAndListen(stopToken).GetAwaiter().GetResult();
                 }
                 catch (Exception ex)
                 {
-                    if (!_isRunning) break;
+                    if (stopToken.IsCancellationRequested) break;
                     Exception rootCause = ex.GetBaseException();
                     _lastConnectionError = rootCause.Message;
                     _logger.Warning($"WebSocket connection lost: {rootCause.Message}");
                 }
+
+                if (stopToken.IsCancellationRequested) break;
 
                 // 被服务器判定为未配对/已吊销：不再重连，等用户重新配对。
                 // Refused as unpaired/revoked: stop here until the user pairs again.
@@ -225,28 +233,29 @@ namespace revit_mcp_plugin.Core
                     break;
                 }
 
-                // Wait before reconnecting
-                if (_isRunning)
-                {
-                    _logger.Info($"Reconnecting in {_reconnectDelayMs / 1000}s...");
-                    Thread.Sleep(_reconnectDelayMs);
-                }
+                // Wait before reconnecting; Stop ends the wait at once.
+                _logger.Info($"Reconnecting in {_reconnectDelayMs / 1000}s...");
+                stopToken.WaitHandle.WaitOne(_reconnectDelayMs);
             }
         }
 
-        private async Task ConnectAndListen()
+        private async Task ConnectAndListen(CancellationToken stopToken)
         {
+            // 本次连接只用局部的 ws 与 stopToken；_ws 字段只供 IsConnected 与 Stop 使用。
+            // This connection only uses its local ws and stopToken; the _ws field is only
+            // for IsConnected and Stop.
             _ws?.Dispose();
-            _ws = new ClientWebSocket();
+            var ws = new ClientWebSocket();
+            _ws = ws;
             // Cloudflare rejects the header-less .NET ClientWebSocket handshake
             // with HTTP 403. An explicit product User-Agent reaches the origin
             // and upgrades normally with HTTP 101.
-            _ws.Options.SetRequestHeader("User-Agent", AddinInfo.UserAgent);
+            ws.Options.SetRequestHeader("User-Agent", AddinInfo.UserAgent);
 
             var uri = new Uri($"{_serverUrl}/{_deviceId}");
             _logger.Info($"Connecting to {uri}...");
 
-            await _ws.ConnectAsync(uri, _cts.Token);
+            await ws.ConnectAsync(uri, stopToken);
             _lastConnectionError = null;
             _logger.Info($"Connected as device {_deviceId}");
 
@@ -260,24 +269,24 @@ namespace revit_mcp_plugin.Core
                 token = _authToken ?? ""
             });
             byte[] authBytes = Encoding.UTF8.GetBytes(authMsg);
-            await _ws.SendAsync(
+            await ws.SendAsync(
                 new ArraySegment<byte>(authBytes),
                 WebSocketMessageType.Text,
                 endOfMessage: true,
-                cancellationToken: _cts.Token);
+                cancellationToken: stopToken);
             _logger.Info("已发送鉴权握手 / Auth handshake sent");
 
             // Receive loop
             var buffer = new byte[65536];
             var messageBuffer = new StringBuilder();
 
-            while (_ws.State == WebSocketState.Open && _isRunning)
+            while (ws.State == WebSocketState.Open && !stopToken.IsCancellationRequested)
             {
                 WebSocketReceiveResult result;
                 try
                 {
-                    result = await _ws.ReceiveAsync(
-                        new ArraySegment<byte>(buffer), _cts.Token);
+                    result = await ws.ReceiveAsync(
+                        new ArraySegment<byte>(buffer), stopToken);
                 }
                 catch (OperationCanceledException)
                 {
@@ -295,7 +304,7 @@ namespace revit_mcp_plugin.Core
                     // reconnect can be refused as "already connected" (4002). Best effort.
                     try
                     {
-                        await _ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "",
+                        await ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "",
                             CancellationToken.None).ConfigureAwait(false);
                     }
                     catch (Exception ex)
@@ -318,11 +327,11 @@ namespace revit_mcp_plugin.Core
                     string response = ProcessJsonRPCRequest(request);
                     byte[] responseBytes = Encoding.UTF8.GetBytes(response);
 
-                    await _ws.SendAsync(
+                    await ws.SendAsync(
                         new ArraySegment<byte>(responseBytes),
                         WebSocketMessageType.Text,
                         endOfMessage: true,
-                        cancellationToken: _cts.Token);
+                        cancellationToken: stopToken);
                 }
             }
         }
