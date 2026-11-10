@@ -3,6 +3,7 @@ using revit_mcp_plugin.Configuration;
 using revit_mcp_plugin.Core;
 using revit_mcp_plugin.Utils;
 using System;
+using System.Globalization;
 using System.IO;
 using System.Threading;
 using System.Windows;
@@ -216,15 +217,27 @@ namespace revit_mcp_plugin.UI
 
         private void SaveButton_Click(object sender, RoutedEventArgs e)
         {
+            // 端口无效时提示并且什么都不保存（原来静默忽略，用户以为已保存）。
+            // An invalid port is reported and nothing is saved (it used to be ignored silently).
+            int port;
+            if (!int.TryParse(PortTextBox.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out port) ||
+                port < 1 || port > 65535)
+            {
+                MessageBox.Show(
+                    $"端口“{PortTextBox.Text}”无效：请输入 1 到 65535 之间的整数。设置未保存。\n" +
+                    $"Invalid port \"{PortTextBox.Text}\": enter a whole number from 1 to 65535. The settings were not saved.",
+                    "Settings", MessageBoxButton.OK, MessageBoxImage.Warning);
+                PortTextBox.Focus();
+                return;
+            }
+
             try
             {
                 var config = SettingsStore.Load();
 
                 config.Settings.Mode = WsRadio.IsChecked == true ? "websocket" : "tcp";
 
-                int port;
-                if (int.TryParse(PortTextBox.Text, out port) && port > 0 && port < 65536)
-                    config.Settings.Port = port;
+                config.Settings.Port = port;
 
                 config.Settings.ConfirmEachRun = ConfirmEachRunCheckBox.IsChecked == true;
 
