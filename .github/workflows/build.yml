@@ -43,6 +43,10 @@ jobs:
       - name: Build command set
         run: dotnet build commandset -c "${{ env.REVIT_CONFIG }}"
 
+      - name: Check build output
+        shell: pwsh
+        run: ./.github/scripts/check-build-output.ps1 -OutputDir "$env:ADDIN_OUTPUT"
+
       - name: Assembly hashes (deterministic build check, compare across runs)
         shell: pwsh
         run: |
