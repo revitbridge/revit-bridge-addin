@@ -6,5 +6,10 @@
     <!-- CI only: maps source paths in the PDBs to /_/ so the output does not depend on the
          checkout directory. Left off locally so PDBs keep real paths for debugging. -->
     <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+    <!-- One C# version for every Revit year and both projects. Without it the compiler picks
+         the target framework's default: 7.3 for net48 (2020-2024), 12 for net8 (2025-2026),
+         14 for net10 (2027). 12 is what the plugin's .NET 8 build has always used; the
+         command set said "latest" (13 with the 9.0 SDK) and needs nothing newer than 12. -->
+    <LangVersion>12.0</LangVersion>
   </PropertyGroup>
 </Project>
