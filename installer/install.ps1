@@ -79,7 +79,12 @@ param(
     [string]$Tag = "latest"
 )
 
-$ErrorActionPreference = "Stop"
+# Run as "irm ... | iex" this script executes in the caller's own scope, so
+# what it changes there is put back when it ends, also when it fails: see the
+# try/finally around the main part below.
+$callerErrorActionPreference = $ErrorActionPreference
+$callerProgressPreference = $ProgressPreference
+$callerSecurityProtocol = [Net.ServicePointManager]::SecurityProtocol
 $addinClassName = "revit_mcp_plugin.Core.Application"
 $userAgent = "revit-bridge-addin-installer"
 # -Mode values of this script and the "mode" values in commandRegistry.json.
@@ -375,320 +380,331 @@ function Get-BlockingRevitProcess {
     return $blocking
 }
 
-# ---------------------------------------------------------------------------
-# Validate input
-# ---------------------------------------------------------------------------
+try {
+    $ErrorActionPreference = "Stop"
+    # The progress bar makes Invoke-WebRequest -OutFile and Expand-Archive very
+    # slow on Windows PowerShell 5.1.
+    $ProgressPreference = "SilentlyContinue"
 
-if ($Mode -eq "remote") {
-    if ([string]::IsNullOrWhiteSpace($Server)) {
-        throw "-Server is required in remote mode, e.g. -Server https://bridge.example.com"
+    # ---------------------------------------------------------------------------
+    # Validate input
+    # ---------------------------------------------------------------------------
+
+    if ($Mode -eq "remote") {
+        if ([string]::IsNullOrWhiteSpace($Server)) {
+            throw "-Server is required in remote mode, e.g. -Server https://bridge.example.com"
+        }
+        if ($Server -match '^wss?://') {
+            throw "-Server is the site address (https://host), not the WebSocket URL. The server returns the WebSocket URL when the pairing code is redeemed."
+        }
+        if ($Server -notmatch '^https://' -and $Server -notmatch '^http://(localhost|127\.0\.0\.1)(:\d+)?/?$') {
+            throw "-Server must start with https:// (http:// is only allowed for localhost)."
+        }
     }
-    if ($Server -match '^wss?://') {
-        throw "-Server is the site address (https://host), not the WebSocket URL. The server returns the WebSocket URL when the pairing code is redeemed."
+
+    if (-not [string]::IsNullOrWhiteSpace($Pair)) {
+        if ($Mode -ne "remote") {
+            throw "-Pair only applies to -Mode remote."
+        }
+        $Pair = $Pair.Trim().ToUpperInvariant()
+        if ($Pair -match '^[A-Z0-9]{8}$') {
+            $Pair = $Pair.Substring(0, 4) + "-" + $Pair.Substring(4)
+        }
+        if ($Pair -notmatch '^[A-Z0-9]{4}-[A-Z0-9]{4}$') {
+            throw "-Pair must be a pairing code in the form XXXX-XXXX."
+        }
     }
-    if ($Server -notmatch '^https://' -and $Server -notmatch '^http://(localhost|127\.0\.0\.1)(:\d+)?/?$') {
-        throw "-Server must start with https:// (http:// is only allowed for localhost)."
+
+    $blockingRevit = @(Get-BlockingRevitProcess -RevitVersion $RevitVersion -Processes @(Get-Process -Name Revit -ErrorAction SilentlyContinue))
+    if ($blockingRevit.Count -gt 0) {
+        throw "Close Revit $RevitVersion before installing or updating the add-in (Revit of other years can stay open). Still running: $($blockingRevit -join '; ')."
     }
-}
 
-if (-not [string]::IsNullOrWhiteSpace($Pair)) {
-    if ($Mode -ne "remote") {
-        throw "-Pair only applies to -Mode remote."
+    # ---------------------------------------------------------------------------
+    # Resolve source
+    # ---------------------------------------------------------------------------
+
+    if ($Source -eq "release") {
+        $resolved = Get-ReleaseSource -Repo $Repo -Tag $Tag
+        $sourcePath = $resolved.Path
+        $sourceLabel = $resolved.Label
+    } else {
+        $sourcePath = (Resolve-Path -LiteralPath $Source).Path
+        $sourceLabel = "local directory"
     }
-    $Pair = $Pair.Trim().ToUpperInvariant()
-    if ($Pair -match '^[A-Z0-9]{8}$') {
-        $Pair = $Pair.Substring(0, 4) + "-" + $Pair.Substring(4)
-    }
-    if ($Pair -notmatch '^[A-Z0-9]{4}-[A-Z0-9]{4}$') {
-        throw "-Pair must be a pairing code in the form XXXX-XXXX."
-    }
-}
 
-$blockingRevit = @(Get-BlockingRevitProcess -RevitVersion $RevitVersion -Processes @(Get-Process -Name Revit -ErrorAction SilentlyContinue))
-if ($blockingRevit.Count -gt 0) {
-    throw "Close Revit $RevitVersion before installing or updating the add-in (Revit of other years can stay open). Still running: $($blockingRevit -join '; ')."
-}
+    $layout = Resolve-SourceLayout -Path $sourcePath
+    Write-Host "Source: $sourceLabel ($sourcePath)"
+    Write-Host "Add-in: $($layout.Name), ClientId $($layout.ClientId), folder $($layout.FolderName)"
 
-# ---------------------------------------------------------------------------
-# Resolve source
-# ---------------------------------------------------------------------------
+    # ---------------------------------------------------------------------------
+    # Work out the connection settings
+    # ---------------------------------------------------------------------------
+    # Everything here can fail (unreadable package, refused pairing code) and none
+    # of it touches the existing install: no file is moved before it has succeeded.
 
-if ($Source -eq "release") {
-    $resolved = Get-ReleaseSource -Repo $Repo -Tag $Tag
-    $sourcePath = $resolved.Path
-    $sourceLabel = $resolved.Label
-} else {
-    $sourcePath = (Resolve-Path -LiteralPath $Source).Path
-    $sourceLabel = "local directory"
-}
+    $addinsRoot = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$RevitVersion"
+    $pluginDestination = Join-Path $addinsRoot $layout.FolderName
+    $addinDestination = Join-Path $addinsRoot $layout.Manifest.Name
+    $registryDestination = Join-Path $pluginDestination "Commands\commandRegistry.json"
 
-$layout = Resolve-SourceLayout -Path $sourcePath
-Write-Host "Source: $sourceLabel ($sourcePath)"
-Write-Host "Add-in: $($layout.Name), ClientId $($layout.ClientId), folder $($layout.FolderName)"
+    # Every text file is read as UTF-8 explicitly (a BOM is still recognised):
+    # Windows PowerShell 5.1 otherwise decodes a file without BOM in the ANSI code
+    # page, which on Chinese Windows (936) destroys every non-ASCII character.
+    $config = Get-Content -LiteralPath (Join-Path $layout.PluginDir "Commands\commandRegistry.json") -Raw -Encoding UTF8 | ConvertFrom-Json
 
-# ---------------------------------------------------------------------------
-# Work out the connection settings
-# ---------------------------------------------------------------------------
-# Everything here can fail (unreadable package, refused pairing code) and none
-# of it touches the existing install: no file is moved before it has succeeded.
-
-$addinsRoot = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$RevitVersion"
-$pluginDestination = Join-Path $addinsRoot $layout.FolderName
-$addinDestination = Join-Path $addinsRoot $layout.Manifest.Name
-$registryDestination = Join-Path $pluginDestination "Commands\commandRegistry.json"
-
-# Every text file is read as UTF-8 explicitly (a BOM is still recognised):
-# Windows PowerShell 5.1 otherwise decodes a file without BOM in the ANSI code
-# page, which on Chinese Windows (936) destroys every non-ASCII character.
-$config = Get-Content -LiteralPath (Join-Path $layout.PluginDir "Commands\commandRegistry.json") -Raw -Encoding UTF8 | ConvertFrom-Json
-
-# Carry the previous settings over an update: mode, deviceId, token and wsUrl
-# belong to this machine, not to the package, and so do port and logLevel.
-# Read from the install that is still in place.
-$existingMode = $null
-$existingWsUrl = ""
-$existingToken = ""
-$existingDeviceId = ""
-$existingConfirmEachRun = $true
-$existingAllowRemoteCode = $false
-$existingPort = 18080
-$existingLogLevel = "Info"
-$previousRegistry = $registryDestination
-if (Test-Path -LiteralPath $previousRegistry) {
-    try {
-        $previous = Get-Content -LiteralPath $previousRegistry -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($null -ne $previous.settings) {
-            if ($null -ne $previous.settings.mode) { $existingMode = ConvertFrom-RegistryMode ([string]$previous.settings.mode) }
-            if ($null -ne $previous.settings.token) { $existingToken = [string]$previous.settings.token }
-            if ($null -ne $previous.settings.deviceId) { $existingDeviceId = [string]$previous.settings.deviceId }
-            if ($null -ne $previous.settings.wsUrl) { $existingWsUrl = [string]$previous.settings.wsUrl }
-            if ($null -ne $previous.settings.confirmEachRun) { $existingConfirmEachRun = [bool]$previous.settings.confirmEachRun }
-            if ($null -ne $previous.settings.allowRemoteCodeExecution) { $existingAllowRemoteCode = [bool]$previous.settings.allowRemoteCodeExecution }
-            if ($null -ne $previous.settings.port) {
-                $portNumber = 0
-                if ([int]::TryParse([string]$previous.settings.port, [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, [ref]$portNumber) -and
-                    $portNumber -ge 1 -and $portNumber -le 65535) {
-                    $existingPort = $portNumber
-                } else {
-                    Write-Warning "Ignored the previous port '$($previous.settings.port)' (not a number from 1 to 65535); using $existingPort."
+    # Carry the previous settings over an update: mode, deviceId, token and wsUrl
+    # belong to this machine, not to the package, and so do port and logLevel.
+    # Read from the install that is still in place.
+    $existingMode = $null
+    $existingWsUrl = ""
+    $existingToken = ""
+    $existingDeviceId = ""
+    $existingConfirmEachRun = $true
+    $existingAllowRemoteCode = $false
+    $existingPort = 18080
+    $existingLogLevel = "Info"
+    $previousRegistry = $registryDestination
+    if (Test-Path -LiteralPath $previousRegistry) {
+        try {
+            $previous = Get-Content -LiteralPath $previousRegistry -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($null -ne $previous.settings) {
+                if ($null -ne $previous.settings.mode) { $existingMode = ConvertFrom-RegistryMode ([string]$previous.settings.mode) }
+                if ($null -ne $previous.settings.token) { $existingToken = [string]$previous.settings.token }
+                if ($null -ne $previous.settings.deviceId) { $existingDeviceId = [string]$previous.settings.deviceId }
+                if ($null -ne $previous.settings.wsUrl) { $existingWsUrl = [string]$previous.settings.wsUrl }
+                if ($null -ne $previous.settings.confirmEachRun) { $existingConfirmEachRun = [bool]$previous.settings.confirmEachRun }
+                if ($null -ne $previous.settings.allowRemoteCodeExecution) { $existingAllowRemoteCode = [bool]$previous.settings.allowRemoteCodeExecution }
+                if ($null -ne $previous.settings.port) {
+                    $portNumber = 0
+                    if ([int]::TryParse([string]$previous.settings.port, [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, [ref]$portNumber) -and
+                        $portNumber -ge 1 -and $portNumber -le 65535) {
+                        $existingPort = $portNumber
+                    } else {
+                        Write-Warning "Ignored the previous port '$($previous.settings.port)' (not a number from 1 to 65535); using $existingPort."
+                    }
+                }
+                # The add-in does not read logLevel yet; an unknown value is replaced quietly.
+                if (@("Debug", "Info", "Warning", "Error") -contains [string]$previous.settings.logLevel) {
+                    $existingLogLevel = [string]$previous.settings.logLevel
                 }
             }
-            # The add-in does not read logLevel yet; an unknown value is replaced quietly.
-            if (@("Debug", "Info", "Warning", "Error") -contains [string]$previous.settings.logLevel) {
-                $existingLogLevel = [string]$previous.settings.logLevel
-            }
-        }
-    } catch {
-        Write-Warning "Could not read settings from the previous install: $($_.Exception.Message)"
-    }
-}
-
-# -Mode wins; without it an update keeps the previous install's mode, and a
-# fresh install is local.
-if ($PSBoundParameters.ContainsKey("Mode")) {
-    $effectiveMode = $Mode
-    $modeSource = ""
-} elseif ($null -ne $existingMode) {
-    $effectiveMode = $existingMode
-    $modeSource = " (kept from the previous install)"
-} else {
-    $effectiveMode = $Mode
-    $modeSource = ""
-}
-
-$wsUrl = $existingWsUrl
-$deviceId = $existingDeviceId
-$effectiveToken = $existingToken
-
-# In local mode a non-empty token is the TCP pre-shared secret that every local
-# call must carry, which a device token from pairing is not: carrying it over
-# would refuse every call from the local MCP server. A token from a previous
-# local install is the user's own TCP secret and stays.
-if ($effectiveMode -eq "local" -and $existingMode -eq "remote" -and -not [string]::IsNullOrEmpty($existingToken)) {
-    $effectiveToken = ""
-    Write-Warning "Switched from remote to local mode: the device token of the pairing ($deviceId) was not kept, because in local mode it would lock the TCP port. To use the bridge server again, pair again: re-run with -Mode remote -Server https://<host> -Pair XXXX-XXXX, or enter a new code in Settings > Connection."
-}
-
-if (-not [string]::IsNullOrWhiteSpace($Pair)) {
-    $paired = Invoke-PairingRedeem -Server $Server -Code $Pair
-    $deviceId = $paired.DeviceId
-    $effectiveToken = $paired.Token
-    $wsUrl = $paired.WsUrl
-} elseif ($effectiveMode -eq "remote") {
-    if ([string]::IsNullOrWhiteSpace($deviceId) -or [string]::IsNullOrWhiteSpace($effectiveToken) -or [string]::IsNullOrWhiteSpace($wsUrl)) {
-        Write-Warning "This Revit is not paired yet. Re-run with -Pair XXXX-XXXX, or enter a pairing code in Settings > Connection."
-    } else {
-        Write-Host "Kept the pairing from the previous install ($deviceId)."
-    }
-}
-
-$modeValue = $registryModes[$effectiveMode]
-
-# Pairing is what authorises a server to run ad-hoc code on this machine, so
-# -Pair switches allowRemoteCodeExecution on unless the caller said otherwise.
-# An update without -Pair keeps whatever the previous install had.
-# ($effective... rather than $allowRemoteCode: PowerShell variable names are
-# case-insensitive, so that name would be the -AllowRemoteCode parameter itself.)
-if ($PSBoundParameters.ContainsKey("AllowRemoteCode")) {
-    $effectiveAllowRemoteCode = [bool]$AllowRemoteCode
-} elseif (-not [string]::IsNullOrWhiteSpace($Pair)) {
-    $effectiveAllowRemoteCode = $true
-} else {
-    $effectiveAllowRemoteCode = $existingAllowRemoteCode
-}
-
-$settings = [pscustomobject]@{
-    logLevel = $existingLogLevel
-    port = $existingPort
-    mode = $modeValue
-    wsUrl = $wsUrl
-    deviceId = $deviceId
-    token = $effectiveToken
-    confirmEachRun = $existingConfirmEachRun
-    allowRemoteCodeExecution = $effectiveAllowRemoteCode
-}
-
-if ($null -eq $config.settings) {
-    $config | Add-Member -NotePropertyName settings -NotePropertyValue $settings
-} else {
-    $config.settings = $settings
-}
-$registryJson = $config | ConvertTo-Json -Depth 20
-
-# ---------------------------------------------------------------------------
-# Install files
-# ---------------------------------------------------------------------------
-# The previous add-in folder is renamed to a backup and the manifest copied to
-# one. If anything below fails, what this run wrote is removed and both are put
-# back under their own names.
-
-$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$backupDestination = "$pluginDestination.backup-$stamp"
-$manifestBackup = "$addinDestination.backup-$stamp"
-$hadPlugin = Test-Path -LiteralPath $pluginDestination
-$hadManifest = Test-Path -LiteralPath $addinDestination
-$movedPlugin = $false
-$backedUpManifest = $false
-
-New-Item -ItemType Directory -Path $addinsRoot -Force | Out-Null
-
-try {
-    if ($hadPlugin) {
-        Move-Item -LiteralPath $pluginDestination -Destination $backupDestination
-        $movedPlugin = $true
-        Write-Host "Existing add-in backed up to: $backupDestination"
-    }
-    if ($hadManifest) {
-        Copy-Item -LiteralPath $addinDestination -Destination $manifestBackup -Force
-        $backedUpManifest = $true
-    }
-
-    Copy-Item -LiteralPath $layout.PluginDir -Destination $addinsRoot -Recurse -Force
-    Copy-Item -LiteralPath $layout.Manifest.FullName -Destination $addinDestination -Force
-
-    # UTF-8 without BOM on both 5.1 and 7, like the shipped file and the add-in's
-    # own writes (Set-Content -Encoding UTF8 adds a BOM on 5.1 only).
-    [IO.File]::WriteAllText($registryDestination, $registryJson, (New-Object System.Text.UTF8Encoding($false)))
-} catch {
-    $installFailure = $_.Exception.Message
-    $restoreProblems = @()
-
-    # The folder at the destination is this run's (partial) copy unless the
-    # previous one could not be moved away.
-    if (($movedPlugin -or -not $hadPlugin) -and (Test-Path -LiteralPath $pluginDestination)) {
-        try {
-            Remove-Item -LiteralPath $pluginDestination -Recurse -Force
         } catch {
-            $restoreProblems += "could not remove the partly copied $pluginDestination ($($_.Exception.Message))"
+            Write-Warning "Could not read settings from the previous install: $($_.Exception.Message)"
         }
     }
-    if ($movedPlugin) {
-        if (Test-Path -LiteralPath $pluginDestination) {
-            $restoreProblems += "the previous add-in is still in $backupDestination"
+
+    # -Mode wins; without it an update keeps the previous install's mode, and a
+    # fresh install is local.
+    if ($PSBoundParameters.ContainsKey("Mode")) {
+        $effectiveMode = $Mode
+        $modeSource = ""
+    } elseif ($null -ne $existingMode) {
+        $effectiveMode = $existingMode
+        $modeSource = " (kept from the previous install)"
+    } else {
+        $effectiveMode = $Mode
+        $modeSource = ""
+    }
+
+    $wsUrl = $existingWsUrl
+    $deviceId = $existingDeviceId
+    $effectiveToken = $existingToken
+
+    # In local mode a non-empty token is the TCP pre-shared secret that every local
+    # call must carry, which a device token from pairing is not: carrying it over
+    # would refuse every call from the local MCP server. A token from a previous
+    # local install is the user's own TCP secret and stays.
+    if ($effectiveMode -eq "local" -and $existingMode -eq "remote" -and -not [string]::IsNullOrEmpty($existingToken)) {
+        $effectiveToken = ""
+        Write-Warning "Switched from remote to local mode: the device token of the pairing ($deviceId) was not kept, because in local mode it would lock the TCP port. To use the bridge server again, pair again: re-run with -Mode remote -Server https://<host> -Pair XXXX-XXXX, or enter a new code in Settings > Connection."
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($Pair)) {
+        $paired = Invoke-PairingRedeem -Server $Server -Code $Pair
+        $deviceId = $paired.DeviceId
+        $effectiveToken = $paired.Token
+        $wsUrl = $paired.WsUrl
+    } elseif ($effectiveMode -eq "remote") {
+        if ([string]::IsNullOrWhiteSpace($deviceId) -or [string]::IsNullOrWhiteSpace($effectiveToken) -or [string]::IsNullOrWhiteSpace($wsUrl)) {
+            Write-Warning "This Revit is not paired yet. Re-run with -Pair XXXX-XXXX, or enter a pairing code in Settings > Connection."
         } else {
+            Write-Host "Kept the pairing from the previous install ($deviceId)."
+        }
+    }
+
+    $modeValue = $registryModes[$effectiveMode]
+
+    # Pairing is what authorises a server to run ad-hoc code on this machine, so
+    # -Pair switches allowRemoteCodeExecution on unless the caller said otherwise.
+    # An update without -Pair keeps whatever the previous install had.
+    # ($effective... rather than $allowRemoteCode: PowerShell variable names are
+    # case-insensitive, so that name would be the -AllowRemoteCode parameter itself.)
+    if ($PSBoundParameters.ContainsKey("AllowRemoteCode")) {
+        $effectiveAllowRemoteCode = [bool]$AllowRemoteCode
+    } elseif (-not [string]::IsNullOrWhiteSpace($Pair)) {
+        $effectiveAllowRemoteCode = $true
+    } else {
+        $effectiveAllowRemoteCode = $existingAllowRemoteCode
+    }
+
+    $settings = [pscustomobject]@{
+        logLevel = $existingLogLevel
+        port = $existingPort
+        mode = $modeValue
+        wsUrl = $wsUrl
+        deviceId = $deviceId
+        token = $effectiveToken
+        confirmEachRun = $existingConfirmEachRun
+        allowRemoteCodeExecution = $effectiveAllowRemoteCode
+    }
+
+    if ($null -eq $config.settings) {
+        $config | Add-Member -NotePropertyName settings -NotePropertyValue $settings
+    } else {
+        $config.settings = $settings
+    }
+    $registryJson = $config | ConvertTo-Json -Depth 20
+
+    # ---------------------------------------------------------------------------
+    # Install files
+    # ---------------------------------------------------------------------------
+    # The previous add-in folder is renamed to a backup and the manifest copied to
+    # one. If anything below fails, what this run wrote is removed and both are put
+    # back under their own names.
+
+    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $backupDestination = "$pluginDestination.backup-$stamp"
+    $manifestBackup = "$addinDestination.backup-$stamp"
+    $hadPlugin = Test-Path -LiteralPath $pluginDestination
+    $hadManifest = Test-Path -LiteralPath $addinDestination
+    $movedPlugin = $false
+    $backedUpManifest = $false
+
+    New-Item -ItemType Directory -Path $addinsRoot -Force | Out-Null
+
+    try {
+        if ($hadPlugin) {
+            Move-Item -LiteralPath $pluginDestination -Destination $backupDestination
+            $movedPlugin = $true
+            Write-Host "Existing add-in backed up to: $backupDestination"
+        }
+        if ($hadManifest) {
+            Copy-Item -LiteralPath $addinDestination -Destination $manifestBackup -Force
+            $backedUpManifest = $true
+        }
+
+        Copy-Item -LiteralPath $layout.PluginDir -Destination $addinsRoot -Recurse -Force
+        Copy-Item -LiteralPath $layout.Manifest.FullName -Destination $addinDestination -Force
+
+        # UTF-8 without BOM on both 5.1 and 7, like the shipped file and the add-in's
+        # own writes (Set-Content -Encoding UTF8 adds a BOM on 5.1 only).
+        [IO.File]::WriteAllText($registryDestination, $registryJson, (New-Object System.Text.UTF8Encoding($false)))
+    } catch {
+        $installFailure = $_.Exception.Message
+        $restoreProblems = @()
+
+        # The folder at the destination is this run's (partial) copy unless the
+        # previous one could not be moved away.
+        if (($movedPlugin -or -not $hadPlugin) -and (Test-Path -LiteralPath $pluginDestination)) {
             try {
-                Move-Item -LiteralPath $backupDestination -Destination $pluginDestination
+                Remove-Item -LiteralPath $pluginDestination -Recurse -Force
             } catch {
-                $restoreProblems += "could not move $backupDestination back to $pluginDestination ($($_.Exception.Message))"
+                $restoreProblems += "could not remove the partly copied $pluginDestination ($($_.Exception.Message))"
+            }
+        }
+        if ($movedPlugin) {
+            if (Test-Path -LiteralPath $pluginDestination) {
+                $restoreProblems += "the previous add-in is still in $backupDestination"
+            } else {
+                try {
+                    Move-Item -LiteralPath $backupDestination -Destination $pluginDestination
+                } catch {
+                    $restoreProblems += "could not move $backupDestination back to $pluginDestination ($($_.Exception.Message))"
+                }
+            }
+        }
+        if ($backedUpManifest) {
+            try {
+                Move-Item -LiteralPath $manifestBackup -Destination $addinDestination -Force
+            } catch {
+                $restoreProblems += "could not move $manifestBackup back to $addinDestination ($($_.Exception.Message))"
+            }
+        } elseif (-not $hadManifest -and (Test-Path -LiteralPath $addinDestination)) {
+            try {
+                Remove-Item -LiteralPath $addinDestination -Force
+            } catch {
+                $restoreProblems += "could not remove the new $addinDestination ($($_.Exception.Message))"
+            }
+        }
+
+        if ($restoreProblems.Count -gt 0) {
+            throw "Installing failed and the previous install could not be restored completely: $($restoreProblems -join '; '). Rename the backup back by hand. Cause: $installFailure"
+        }
+        if ($hadPlugin -or $hadManifest) {
+            throw "Installing failed, so the previous install was restored unchanged. Cause: $installFailure"
+        }
+        throw "Installing failed; the partly copied files were removed. Cause: $installFailure"
+    }
+
+    # ---------------------------------------------------------------------------
+    # Report
+    # ---------------------------------------------------------------------------
+
+    $mainDllDestination = Join-Path $pluginDestination "RevitMCPPlugin.dll"
+    $commandDllDestination = Join-Path $pluginDestination "Commands\RevitMCPCommandSet\$RevitVersion\RevitMCPCommandSet.dll"
+    if (-not (Test-Path -LiteralPath $commandDllDestination)) {
+        Write-Warning "Command set for Revit $RevitVersion not found at $commandDllDestination. Only the add-in shell was installed."
+    }
+
+    # Other manifests that load the same add-in class: upstream mcp-servers-for-revit
+    # or an older copy of this add-in. They use a different ClientId and folder, so
+    # they can coexist, but the user should know they are there.
+    $manifestRoots = @(
+        $addinsRoot,
+        (Join-Path $env:ProgramData "Autodesk\Revit\Addins\$RevitVersion")
+    ) | Select-Object -Unique
+    $otherManifests = @()
+    foreach ($manifestRoot in $manifestRoots) {
+        if (-not (Test-Path -LiteralPath $manifestRoot)) { continue }
+        foreach ($manifest in Get-ChildItem -LiteralPath $manifestRoot -Filter "*.addin" -File -ErrorAction SilentlyContinue) {
+            if ($manifest.FullName -eq $addinDestination) { continue }
+            if (Select-String -LiteralPath $manifest.FullName -SimpleMatch $addinClassName -Encoding UTF8 -Quiet) {
+                $otherManifests += $manifest.FullName
             }
         }
     }
-    if ($backedUpManifest) {
-        try {
-            Move-Item -LiteralPath $manifestBackup -Destination $addinDestination -Force
-        } catch {
-            $restoreProblems += "could not move $manifestBackup back to $addinDestination ($($_.Exception.Message))"
+
+    Write-Host ""
+    Write-Host "Installed to:        $pluginDestination"
+    Write-Host "Manifest:            $addinDestination"
+    Write-Host "Source:              $sourceLabel"
+    Write-Host "Mode:                $effectiveMode$modeSource"
+    if ($effectiveMode -eq "remote") {
+        if ([string]::IsNullOrWhiteSpace($deviceId) -or [string]::IsNullOrWhiteSpace($effectiveToken)) {
+            Write-Host ("Server:              " + "$Server (not paired yet)".Trim())
+        } else {
+            Write-Host "Server:              $wsUrl"
+            Write-Host "Device:              $deviceId"
         }
-    } elseif (-not $hadManifest -and (Test-Path -LiteralPath $addinDestination)) {
-        try {
-            Remove-Item -LiteralPath $addinDestination -Force
-        } catch {
-            $restoreProblems += "could not remove the new $addinDestination ($($_.Exception.Message))"
-        }
-    }
-
-    if ($restoreProblems.Count -gt 0) {
-        throw "Installing failed and the previous install could not be restored completely: $($restoreProblems -join '; '). Rename the backup back by hand. Cause: $installFailure"
-    }
-    if ($hadPlugin -or $hadManifest) {
-        throw "Installing failed, so the previous install was restored unchanged. Cause: $installFailure"
-    }
-    throw "Installing failed; the partly copied files were removed. Cause: $installFailure"
-}
-
-# ---------------------------------------------------------------------------
-# Report
-# ---------------------------------------------------------------------------
-
-$mainDllDestination = Join-Path $pluginDestination "RevitMCPPlugin.dll"
-$commandDllDestination = Join-Path $pluginDestination "Commands\RevitMCPCommandSet\$RevitVersion\RevitMCPCommandSet.dll"
-if (-not (Test-Path -LiteralPath $commandDllDestination)) {
-    Write-Warning "Command set for Revit $RevitVersion not found at $commandDllDestination. Only the add-in shell was installed."
-}
-
-# Other manifests that load the same add-in class: upstream mcp-servers-for-revit
-# or an older copy of this add-in. They use a different ClientId and folder, so
-# they can coexist, but the user should know they are there.
-$manifestRoots = @(
-    $addinsRoot,
-    (Join-Path $env:ProgramData "Autodesk\Revit\Addins\$RevitVersion")
-) | Select-Object -Unique
-$otherManifests = @()
-foreach ($manifestRoot in $manifestRoots) {
-    if (-not (Test-Path -LiteralPath $manifestRoot)) { continue }
-    foreach ($manifest in Get-ChildItem -LiteralPath $manifestRoot -Filter "*.addin" -File -ErrorAction SilentlyContinue) {
-        if ($manifest.FullName -eq $addinDestination) { continue }
-        if (Select-String -LiteralPath $manifest.FullName -SimpleMatch $addinClassName -Encoding UTF8 -Quiet) {
-            $otherManifests += $manifest.FullName
-        }
-    }
-}
-
-Write-Host ""
-Write-Host "Installed to:        $pluginDestination"
-Write-Host "Manifest:            $addinDestination"
-Write-Host "Source:              $sourceLabel"
-Write-Host "Mode:                $effectiveMode$modeSource"
-if ($effectiveMode -eq "remote") {
-    if ([string]::IsNullOrWhiteSpace($deviceId) -or [string]::IsNullOrWhiteSpace($effectiveToken)) {
-        Write-Host ("Server:              " + "$Server (not paired yet)".Trim())
     } else {
-        Write-Host "Server:              $wsUrl"
-        Write-Host "Device:              $deviceId"
+        Write-Host "TCP endpoint:        127.0.0.1:$existingPort"
     }
-} else {
-    Write-Host "TCP endpoint:        127.0.0.1:$existingPort"
-}
-Write-Host "Confirm each run:    $existingConfirmEachRun"
-Write-Host "Remote code allowed: $effectiveAllowRemoteCode"
-Write-Host "RevitMCPPlugin.dll SHA-256:     $(Get-FileSha256 $mainDllDestination)"
-Write-Host "RevitMCPCommandSet.dll SHA-256: $(Get-FileSha256 $commandDllDestination)"
-if ($otherManifests.Count -gt 0) {
-    Write-Warning "Other manifests load the same add-in class ($addinClassName):"
-    foreach ($manifestPath in $otherManifests) {
-        Write-Warning "  $manifestPath"
+    Write-Host "Confirm each run:    $existingConfirmEachRun"
+    Write-Host "Remote code allowed: $effectiveAllowRemoteCode"
+    Write-Host "RevitMCPPlugin.dll SHA-256:     $(Get-FileSha256 $mainDllDestination)"
+    Write-Host "RevitMCPCommandSet.dll SHA-256: $(Get-FileSha256 $commandDllDestination)"
+    if ($otherManifests.Count -gt 0) {
+        Write-Warning "Other manifests load the same add-in class ($addinClassName):"
+        foreach ($manifestPath in $otherManifests) {
+            Write-Warning "  $manifestPath"
+        }
+        Write-Warning "They can coexist with revit-bridge (different ClientId and folder). If the 'Revit MCP Plugin' ribbon panel is missing or duplicated, remove one of them."
     }
-    Write-Warning "They can coexist with revit-bridge (different ClientId and folder). If the 'Revit MCP Plugin' ribbon panel is missing or duplicated, remove one of them."
+    Write-Host ""
+    Write-Host "Start Revit $RevitVersion, then click 'Revit MCP Switch' on the 'Revit MCP Plugin' ribbon panel."
+} finally {
+    $ErrorActionPreference = $callerErrorActionPreference
+    $ProgressPreference = $callerProgressPreference
+    [Net.ServicePointManager]::SecurityProtocol = $callerSecurityProtocol
 }
-Write-Host ""
-Write-Host "Start Revit $RevitVersion, then click 'Revit MCP Switch' on the 'Revit MCP Plugin' ribbon panel."
