@@ -521,6 +521,8 @@ try {
     $existingAllowRemoteCode = $false
     $existingPort = 18080
     $existingLogLevel = "Info"
+    $previousCommandNames = $null
+    $previousDisabledNames = @()
     $previousRegistry = $registryDestination
     if (Test-Path -LiteralPath $previousRegistry) {
         try {
@@ -545,6 +547,10 @@ try {
                 if (@("Debug", "Info", "Warning", "Error") -contains [string]$previous.settings.logLevel) {
                     $existingLogLevel = [string]$previous.settings.logLevel
                 }
+            }
+            if ($null -ne $previous.commands) {
+                $previousCommandNames = @($previous.commands | ForEach-Object { [string]$_.commandName })
+                $previousDisabledNames = @($previous.commands | Where-Object { $_.enabled -eq $false } | ForEach-Object { [string]$_.commandName })
             }
         } catch {
             Write-Warning "Could not read settings from the previous install: $($_.Exception.Message)"
@@ -776,6 +782,21 @@ try {
         }
         Write-Host "Confirm each run:    $existingConfirmEachRun"
         Write-Host "Remote code allowed: $effectiveAllowRemoteCode"
+        # The Command sets page switches a command off by removing it from the list, which
+        # cannot be told apart from a command that is new in this package, so the
+        # package's list is installed as it is, every command enabled. Name the commands
+        # the user may want to switch off again.
+        if ($null -ne $previousCommandNames) {
+            $packageNames = @($config.commands | ForEach-Object { [string]$_.commandName })
+            $notBefore = @($packageNames | Where-Object { $previousCommandNames -notcontains $_ })
+            $offBefore = @($packageNames | Where-Object { $previousDisabledNames -contains $_ })
+            if ($notBefore.Count -gt 0 -or $offBefore.Count -gt 0) {
+                Write-Host "Commands:            the package's list was installed with every command enabled."
+                if ($notBefore.Count -gt 0) { Write-Host "  Not in the previous list (new, or switched off in Settings > Command sets): $($notBefore -join ', ')" }
+                if ($offBefore.Count -gt 0) { Write-Host "  Switched off in the previous list (enabled: false): $($offBefore -join ', ')" }
+                Write-Host "  Switch them off again in Settings > Command sets if you do not want them."
+            }
+        }
         Write-Host "RevitMCPPlugin.dll SHA-256:     $(Get-FileSha256 $mainDllDestination)"
         Write-Host "RevitMCPCommandSet.dll SHA-256: $(Get-FileSha256 $commandDllDestination)"
         if ($otherManifests.Count -gt 0) {
