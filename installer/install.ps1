@@ -364,51 +364,31 @@ Write-Host "Source: $sourceLabel ($sourcePath)"
 Write-Host "Add-in: $($layout.Name), ClientId $($layout.ClientId), folder $($layout.FolderName)"
 
 # ---------------------------------------------------------------------------
-# Install files
+# Work out the connection settings
 # ---------------------------------------------------------------------------
+# Everything here can fail (unreadable package, refused pairing code) and none
+# of it touches the existing install: no file is moved before it has succeeded.
 
 $addinsRoot = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$RevitVersion"
 $pluginDestination = Join-Path $addinsRoot $layout.FolderName
 $addinDestination = Join-Path $addinsRoot $layout.Manifest.Name
-$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-
-New-Item -ItemType Directory -Path $addinsRoot -Force | Out-Null
-
-$previousRegistry = $null
-if (Test-Path -LiteralPath $pluginDestination) {
-    $backupDestination = "$pluginDestination.backup-$stamp"
-    Move-Item -LiteralPath $pluginDestination -Destination $backupDestination
-    Write-Host "Existing add-in backed up to: $backupDestination"
-    $candidate = Join-Path $backupDestination "Commands\commandRegistry.json"
-    if (Test-Path -LiteralPath $candidate) {
-        $previousRegistry = $candidate
-    }
-}
-if (Test-Path -LiteralPath $addinDestination) {
-    Copy-Item -LiteralPath $addinDestination -Destination "$addinDestination.backup-$stamp" -Force
-}
-
-Copy-Item -LiteralPath $layout.PluginDir -Destination $addinsRoot -Recurse -Force
-Copy-Item -LiteralPath $layout.Manifest.FullName -Destination $addinDestination -Force
-
-# ---------------------------------------------------------------------------
-# Write connection settings
-# ---------------------------------------------------------------------------
-
 $registryDestination = Join-Path $pluginDestination "Commands\commandRegistry.json"
+
 # Every text file is read as UTF-8 explicitly (a BOM is still recognised):
 # Windows PowerShell 5.1 otherwise decodes a file without BOM in the ANSI code
 # page, which on Chinese Windows (936) destroys every non-ASCII character.
-$config = Get-Content -LiteralPath $registryDestination -Raw -Encoding UTF8 | ConvertFrom-Json
+$config = Get-Content -LiteralPath (Join-Path $layout.PluginDir "Commands\commandRegistry.json") -Raw -Encoding UTF8 | ConvertFrom-Json
 
 # Carry the previous pairing over an update: deviceId, token and wsUrl belong
-# to this machine, not to the package.
+# to this machine, not to the package. Read from the install that is still in
+# place.
 $existingWsUrl = ""
 $existingToken = ""
 $existingDeviceId = ""
 $existingConfirmEachRun = $true
 $existingAllowRemoteCode = $false
-if ($null -ne $previousRegistry) {
+$previousRegistry = $registryDestination
+if (Test-Path -LiteralPath $previousRegistry) {
     try {
         $previous = Get-Content -LiteralPath $previousRegistry -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($null -ne $previous.settings) {
@@ -475,10 +455,88 @@ if ($null -eq $config.settings) {
 } else {
     $config.settings = $settings
 }
-# UTF-8 without BOM on both 5.1 and 7, like the shipped file and the add-in's own
-# writes (Set-Content -Encoding UTF8 adds a BOM on 5.1 only).
 $registryJson = $config | ConvertTo-Json -Depth 20
-[IO.File]::WriteAllText($registryDestination, $registryJson, (New-Object System.Text.UTF8Encoding($false)))
+
+# ---------------------------------------------------------------------------
+# Install files
+# ---------------------------------------------------------------------------
+# The previous add-in folder is renamed to a backup and the manifest copied to
+# one. If anything below fails, what this run wrote is removed and both are put
+# back under their own names.
+
+$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$backupDestination = "$pluginDestination.backup-$stamp"
+$manifestBackup = "$addinDestination.backup-$stamp"
+$hadPlugin = Test-Path -LiteralPath $pluginDestination
+$hadManifest = Test-Path -LiteralPath $addinDestination
+$movedPlugin = $false
+$backedUpManifest = $false
+
+New-Item -ItemType Directory -Path $addinsRoot -Force | Out-Null
+
+try {
+    if ($hadPlugin) {
+        Move-Item -LiteralPath $pluginDestination -Destination $backupDestination
+        $movedPlugin = $true
+        Write-Host "Existing add-in backed up to: $backupDestination"
+    }
+    if ($hadManifest) {
+        Copy-Item -LiteralPath $addinDestination -Destination $manifestBackup -Force
+        $backedUpManifest = $true
+    }
+
+    Copy-Item -LiteralPath $layout.PluginDir -Destination $addinsRoot -Recurse -Force
+    Copy-Item -LiteralPath $layout.Manifest.FullName -Destination $addinDestination -Force
+
+    # UTF-8 without BOM on both 5.1 and 7, like the shipped file and the add-in's
+    # own writes (Set-Content -Encoding UTF8 adds a BOM on 5.1 only).
+    [IO.File]::WriteAllText($registryDestination, $registryJson, (New-Object System.Text.UTF8Encoding($false)))
+} catch {
+    $installFailure = $_.Exception.Message
+    $restoreProblems = @()
+
+    # The folder at the destination is this run's (partial) copy unless the
+    # previous one could not be moved away.
+    if (($movedPlugin -or -not $hadPlugin) -and (Test-Path -LiteralPath $pluginDestination)) {
+        try {
+            Remove-Item -LiteralPath $pluginDestination -Recurse -Force
+        } catch {
+            $restoreProblems += "could not remove the partly copied $pluginDestination ($($_.Exception.Message))"
+        }
+    }
+    if ($movedPlugin) {
+        if (Test-Path -LiteralPath $pluginDestination) {
+            $restoreProblems += "the previous add-in is still in $backupDestination"
+        } else {
+            try {
+                Move-Item -LiteralPath $backupDestination -Destination $pluginDestination
+            } catch {
+                $restoreProblems += "could not move $backupDestination back to $pluginDestination ($($_.Exception.Message))"
+            }
+        }
+    }
+    if ($backedUpManifest) {
+        try {
+            Move-Item -LiteralPath $manifestBackup -Destination $addinDestination -Force
+        } catch {
+            $restoreProblems += "could not move $manifestBackup back to $addinDestination ($($_.Exception.Message))"
+        }
+    } elseif (-not $hadManifest -and (Test-Path -LiteralPath $addinDestination)) {
+        try {
+            Remove-Item -LiteralPath $addinDestination -Force
+        } catch {
+            $restoreProblems += "could not remove the new $addinDestination ($($_.Exception.Message))"
+        }
+    }
+
+    if ($restoreProblems.Count -gt 0) {
+        throw "Installing failed and the previous install could not be restored completely: $($restoreProblems -join '; '). Rename the backup back by hand. Cause: $installFailure"
+    }
+    if ($hadPlugin -or $hadManifest) {
+        throw "Installing failed, so the previous install was restored unchanged. Cause: $installFailure"
+    }
+    throw "Installing failed; the partly copied files were removed. Cause: $installFailure"
+}
 
 # ---------------------------------------------------------------------------
 # Report
