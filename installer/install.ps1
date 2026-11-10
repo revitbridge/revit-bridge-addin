@@ -206,27 +206,39 @@ function Invoke-PairingRedeem {
     try {
         $reply = Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType "application/json" -Headers @{ "User-Agent" = $userAgent }
     } catch {
-        $response = $_.Exception.Response
+        $failure = $_
+        $response = $failure.Exception.Response
         $status = $null
         if ($null -ne $response) { $status = [int]$response.StatusCode }
+        # The reply body is in ErrorDetails on both 5.1 and 7: 5.1 has already read
+        # the response stream, and 7's HttpResponseMessage has no such stream.
+        $text = ""
+        if ($null -ne $failure.ErrorDetails -and $failure.ErrorDetails.Message) {
+            $text = [string]$failure.ErrorDetails.Message
+        }
+        $errorCode = ""
         $detail = ""
-        try {
-            if ($null -ne $response) {
-                $reader = New-Object IO.StreamReader($response.GetResponseStream())
-                $text = $reader.ReadToEnd()
-                $reader.Close()
-                if ($text) {
-                    $parsed = $text | ConvertFrom-Json
-                    if ($null -ne $parsed.message) { $detail = [string]$parsed.message }
-                    elseif ($null -ne $parsed.error) { $detail = [string]$parsed.error }
-                }
+        if ($text) {
+            try {
+                $parsed = $text | ConvertFrom-Json
+                if ($null -ne $parsed.error) { $errorCode = [string]$parsed.error }
+                if ($null -ne $parsed.message) { $detail = [string]$parsed.message }
+                elseif ($null -ne $parsed.detail) { $detail = [string]$parsed.detail }
+                elseif ($errorCode) { $detail = $errorCode }
+            } catch {
+                Write-Verbose "The error reply from $url is not JSON."
             }
-        } catch { }
+        }
 
-        if ($status -eq 404) {
+        # Same rule as the add-in's PairingClient: only 404 with error
+        # "invalid_code" means the code itself was refused.
+        if ($status -eq 404 -and $errorCode -ceq "invalid_code") {
             throw "Pairing code $Code was refused (invalid, already used, or expired). Generate a new one on the site. $detail".Trim()
         }
-        throw "Could not redeem the pairing code at $url : $($_.Exception.Message) $detail".Trim()
+        if ($status -eq 404) {
+            throw "$url answered 404 Not Found without a pairing-code error, so the server address is probably wrong. -Server is the site address, e.g. https://bridge.example.com. $detail".Trim()
+        }
+        throw "Could not redeem the pairing code at $url : $($failure.Exception.Message) $detail".Trim()
     }
 
     if ([string]::IsNullOrWhiteSpace($reply.device_id) -or
