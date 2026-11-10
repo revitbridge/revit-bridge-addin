@@ -1,4 +1,5 @@
 ﻿using Newtonsoft.Json;
+using revit_mcp_plugin.Configuration;
 using System;
 using System.IO;
 
@@ -69,7 +70,13 @@ namespace revit_mcp_plugin.Utils
                 var defaultRegistry = new { commands = new object[] { } };
                 string jsonContent = JsonConvert.SerializeObject(defaultRegistry, Formatting.Indented);
 
-                File.WriteAllText(filePath, jsonContent);
+                // Temporary file, then rename: a crash cannot leave an empty file behind, and
+                // a file another thread or process created in the meantime is kept.
+                SettingsStore.WriteAllTextAtomically(filePath, jsonContent, overwrite: false);
+            }
+            catch (IOException) when (File.Exists(filePath))
+            {
+                // Someone else created it first; theirs stays.
             }
             catch (Exception ex)
             {

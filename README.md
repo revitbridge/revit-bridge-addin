@@ -8,9 +8,9 @@ Fork of [mcp-servers-for-revit](https://github.com/mcp-servers-for-revit/mcp-ser
 
 ## Install
 
-Requirements: Windows x64, Autodesk Revit 2026, PowerShell 5.1 or later. Close Revit first.
+Requirements: Windows x64, Autodesk Revit 2026, PowerShell 5.1 or later. Close Revit 2026 first; Revit of other years can stay open.
 
-One line, local mode (Revit listens on `127.0.0.1:18080`, no token needed):
+One line, local mode on a fresh install (Revit listens on `127.0.0.1:18080`, no token needed):
 
 ```powershell
 irm https://raw.githubusercontent.com/revitbridge/revit-bridge-addin/main/installer/install.ps1 | iex
@@ -22,19 +22,23 @@ Remote mode (Revit connects out to a bridge server; nothing is exposed on your m
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/revitbridge/revit-bridge-addin/main/installer/install.ps1))) -Mode remote -Server https://<host> -Pair XXXX-XXXX
 ```
 
-The installer redeems the code at `<host>/api/v1/bridge/devices/redeem` and stores the device id, device token and WebSocket URL the server returns. Codes are single use and expire after 10 minutes. You can also install without `-Pair` and enter the code later under **Settings > Connection**.
+The installer redeems the code at `<host>/api/v1/bridge/devices/redeem` and stores the device id, device token and WebSocket URL the server returns. Codes are single use and expire after 10 minutes. You can also install without `-Pair` and enter the code later under **Settings > Connection**. The code is redeemed before anything on disk changes: if the server refuses it ("refused (invalid, already used, or expired)") the existing install is left as it was; "the server address is probably wrong" means `-Server` answered 404 without a pairing-code error.
 
 Pairing is what authorises that server to run ad-hoc code here, so it switches `allowRemoteCodeExecution` on; every such run still asks in Revit first (see [Use](#use)). To pair without it, add `-AllowRemoteCode:$false`. **Unpair** in the Settings window - or the server revoking this device - switches it back off.
 
-The installer downloads the latest [Release](https://github.com/revitbridge/revit-bridge-addin/releases), verifies it against `SHA256SUMS.txt`, backs up any previous install to `revit-bridge.backup-<timestamp>`, and writes the connection settings. Revit shows a "Security - Unsigned Add-In" prompt the first time it loads each new build (so again after every upgrade, even when the previous build was on the Always Load list): releases are not code-signed yet (see [Signing](#signing)). Its default button is **Do Not Load**; choose **Always Load** to stop the prompt for that build, or **Load Once** to be asked again next start. The bridge does not listen until you click **Revit MCP Switch** after each Revit start (see [Use](#use)).
+To update, run the first one-line command again, for local and remote installs alike (no `-Mode` or `-Pair` needed). An update keeps the previous install's mode and pairing (`deviceId`, `token`, `wsUrl`), `allowRemoteCodeExecution`, `confirmEachRun`, `port` and `logLevel`. It does **not** keep your command choices: the command list is the package's again, every command enabled, and the installer names the commands that were not in your previous list so you can switch them off again under **Settings > Command sets**. (That page switches a command off by removing it from the list, which the installer cannot tell apart from a command that is new in the release.)
+
+Pass `-Mode` only to switch. `-Mode local` over a paired remote install drops the device token, because in local mode a token locks the TCP port, and switches `allowRemoteCodeExecution` off with it (add `-AllowRemoteCode` to keep it on); to go back to remote, pair again. `-Mode remote` over a local install does not carry the local TCP secret over; the Revit is then not paired until you pair it. To re-pair an existing remote install, `-Server https://<host> -Pair XXXX-XXXX` is enough; on a fresh or local install `-Pair` needs `-Mode remote` as in the command above.
+
+The installer downloads the latest [Release](https://github.com/revitbridge/revit-bridge-addin/releases), verifies it against `SHA256SUMS.txt`, backs up any previous install to `revit-bridge.backup-<timestamp>` (`-2`, `-3`, ... appended when that name is taken), and writes the connection settings. If copying the new files fails, or the run is stopped half way (Ctrl+C), it puts the previous install back and says so. Revit shows a "Security - Unsigned Add-In" prompt the first time it loads each new build (so again after every upgrade, even when the previous build was on the Always Load list): releases are not code-signed yet (see [Signing](#signing)). Its default button is **Do Not Load**; choose **Always Load** to stop the prompt for that build, or **Load Once** to be asked again next start. The bridge does not listen until you click **Revit MCP Switch** after each Revit start (see [Use](#use)).
 
 Installer parameters:
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `-Mode local\|remote` | `local` | TCP on localhost, or outbound WebSocket to `-Server` |
-| `-Server <https url>` | | Site address of the bridge server, required for `remote` (not the `wss://` URL) |
-| `-Pair XXXX-XXXX` | | Pairing code from the site (`remote`); omitted, an existing pairing is kept |
+| `-Mode local\|remote` | previous install's mode, else `local` | TCP on localhost, or outbound WebSocket to `-Server` |
+| `-Server <https url>` | | Site address of the bridge server (not the `wss://` URL), required with `-Pair` and with `-Mode remote` |
+| `-Pair XXXX-XXXX` | | Pairing code from the site, for a remote install (an existing remote install, or `-Mode remote`); omitted, an existing pairing is kept |
 | `-AllowRemoteCode` | on with `-Pair` | Allow `send_code_to_revit` / `manage_solidified_tools` from the paired server. Pairing switches it on; pass `-AllowRemoteCode:$false` to pair without it. Without `-Pair`, the previous setting is kept |
 | `-Source release\|<dir>` | `release` | Install from GitHub Releases, or from a local directory (see [Build](#build)) |
 | `-RevitVersion` | `2026` | Target Revit year |
@@ -102,7 +106,7 @@ Settings live in `<addin folder>\Commands\commandRegistry.json` under `settings`
 
 | Field | Default | Meaning |
 |---|---|---|
-| `logLevel` | `"Info"` | Log verbosity |
+| `logLevel` | `"Info"` | Not read yet: the log always records Info, Warning and Error. Kept across updates |
 | `port` | `18080` | TCP port for local mode (bound to `127.0.0.1` only) |
 | `mode` | `"tcp"` | `"tcp"` (local) or `"websocket"` (remote) |
 | `wsUrl` | | WebSocket base URL, written by pairing (the server decides it); the add-in connects to `<wsUrl>/<deviceId>` |
@@ -111,7 +115,7 @@ Settings live in `<addin folder>\Commands\commandRegistry.json` under `settings`
 | `confirmEachRun` | `true` | Show the Yes/No dialog for ad-hoc code runs the server marks for confirmation |
 | `allowRemoteCodeExecution` | `false` until paired | Remote mode only: allow `send_code_to_revit` and `manage_solidified_tools`; rejected with an error when `false`. Set by pairing, cleared by unpairing or by the server revoking this device |
 
-The `commands` array in the same file registers the 26 built-in commands from `RevitMCPCommandSet`; `command.json` next to the DLL holds their parameter schemas.
+The `commands` array in the same file registers the 26 built-in commands from `RevitMCPCommandSet`; `Commands\RevitMCPCommandSet\command.json` lists each command's name, description and assembly path. Saving the **Command sets** page in Settings rewrites only `commands`, and the **Connection** page only the settings it shows; everything else in the file, including properties this version does not know, stays. An empty or damaged file is reported and left as it is, not replaced by defaults.
 
 ## License
 
