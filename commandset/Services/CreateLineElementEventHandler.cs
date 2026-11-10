@@ -72,7 +72,7 @@ namespace RevitMCPCommandSet.Services
 
                     if (data.TypeId != -1 && data.TypeId != 0)
                     {
-                        ElementId typeELeId = new ElementId(data.TypeId);
+                        ElementId typeELeId = ElementIdCompat.FromInt(data.TypeId);
                         if (typeELeId != null)
                         {
                             Element typeEle = doc.GetElement(typeELeId);

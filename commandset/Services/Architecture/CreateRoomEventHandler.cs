@@ -113,7 +113,7 @@ namespace RevitMCPCommandSet.Services.Architecture
                         if (roomInfo.LevelId > 0)
                         {
                             // Use specified level ID
-                            level = _doc.GetElement(new ElementId(roomInfo.LevelId)) as Level;
+                            level = _doc.GetElement(ElementIdCompat.FromInt(roomInfo.LevelId)) as Level;
                         }
 
                         if (level == null && roomInfo.Location != null)
@@ -201,7 +201,7 @@ namespace RevitMCPCommandSet.Services.Architecture
                             Parameter upperLimitParam = room.get_Parameter(BuiltInParameter.ROOM_UPPER_LEVEL);
                             if (upperLimitParam != null && !upperLimitParam.IsReadOnly)
                             {
-                                upperLimitParam.Set(new ElementId(roomInfo.UpperLimitId));
+                                upperLimitParam.Set(ElementIdCompat.FromInt(roomInfo.UpperLimitId));
                             }
                         }
 

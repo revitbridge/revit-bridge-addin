@@ -237,7 +237,7 @@ namespace RevitMCPCommandSet.Services
             // 3. 族符号过滤器 (仅适用于元素实例)
             if (!isElementType && settings.FilterFamilySymbolId > 0)
             {
-                ElementId symbolId = new ElementId(settings.FilterFamilySymbolId);
+                ElementId symbolId = ElementIdCompat.FromInt(settings.FilterFamilySymbolId);
                 // 检查元素是否存在且是族类型
                 Element symbolElement = doc.GetElement(symbolId);
                 if (symbolElement != null && symbolElement is FamilySymbol)

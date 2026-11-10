@@ -88,7 +88,7 @@ public class CreateDimensionEventHandler : IExternalEventHandler, IWaitableExter
                 View view = null;
                 if (dimInfo.ViewId > 0)
                 {
-                    var element = Doc.GetElement(new ElementId(dimInfo.ViewId));
+                    var element = Doc.GetElement(ElementIdCompat.FromInt(dimInfo.ViewId));
                     view = element as View;
                 }
 
@@ -138,7 +138,7 @@ public class CreateDimensionEventHandler : IExternalEventHandler, IWaitableExter
                             var references = new ReferenceArray();
                             foreach (var elementId in dimInfo.ElementIds)
                             {
-                                var element = Doc.GetElement(new ElementId(elementId));
+                                var element = Doc.GetElement(ElementIdCompat.FromInt(elementId));
                                 if (element != null)
                                 {
                                     // Get appropriate reference for this element
@@ -180,7 +180,7 @@ public class CreateDimensionEventHandler : IExternalEventHandler, IWaitableExter
                             // Apply dimension style if specified
                             if (dimInfo.DimensionStyleId > 0)
                             {
-                                var dimensionType = Doc.GetElement(new ElementId(dimInfo.DimensionStyleId)) as DimensionType;
+                                var dimensionType = Doc.GetElement(ElementIdCompat.FromInt(dimInfo.DimensionStyleId)) as DimensionType;
                                 if (dimensionType != null)
                                 {
                                     dimension.DimensionType = dimensionType;
