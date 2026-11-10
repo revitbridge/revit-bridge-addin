@@ -254,6 +254,52 @@ function Get-FileSha256 {
     return "(missing)"
 }
 
+function Get-RevitExeYear {
+    param([string]$Path)
+    # The Revit year of a Revit.exe: from its file version (26.x is 2026), or, when
+    # the file cannot be read, from the last "20xx" in its path. $null if neither.
+    try {
+        $major = [Diagnostics.FileVersionInfo]::GetVersionInfo($Path).FileMajorPart
+        if ($major -ge 15 -and $major -le 99) {
+            return [string](2000 + $major)
+        }
+    } catch {
+        Write-Verbose "Could not read the file version of ${Path}: $($_.Exception.Message)"
+    }
+    $years = [regex]::Matches($Path, '(?<!\d)20\d\d(?!\d)')
+    if ($years.Count -gt 0) {
+        return $years[$years.Count - 1].Value
+    }
+    return $null
+}
+
+function Get-BlockingRevitProcess {
+    param([string]$RevitVersion, [object[]]$Processes)
+    # Only a running Revit of the target year holds this add-in's files. A Revit
+    # whose program path cannot be read (access denied, e.g. one running as
+    # administrator) may be that year, so it blocks as well.
+    $blocking = @()
+    foreach ($process in $Processes) {
+        $path = $null
+        try {
+            $path = [string]$process.Path
+        } catch {
+            $path = $null
+        }
+        if ([string]::IsNullOrWhiteSpace($path)) {
+            $blocking += "a Revit process (id $($process.Id)) whose program path could not be read (access denied, for example when it runs as administrator), so it may be Revit $RevitVersion"
+            continue
+        }
+        $year = Get-RevitExeYear -Path $path
+        if ($null -eq $year) {
+            $blocking += "a Revit process (id $($process.Id), $path) whose Revit year could not be determined"
+        } elseif ($year -eq $RevitVersion) {
+            $blocking += "Revit $year (process id $($process.Id), $path)"
+        }
+    }
+    return $blocking
+}
+
 # ---------------------------------------------------------------------------
 # Validate input
 # ---------------------------------------------------------------------------
@@ -283,8 +329,9 @@ if (-not [string]::IsNullOrWhiteSpace($Pair)) {
     }
 }
 
-if (Get-Process -Name Revit -ErrorAction SilentlyContinue) {
-    throw "Close Revit before installing or updating the add-in."
+$blockingRevit = @(Get-BlockingRevitProcess -RevitVersion $RevitVersion -Processes @(Get-Process -Name Revit -ErrorAction SilentlyContinue))
+if ($blockingRevit.Count -gt 0) {
+    throw "Close Revit $RevitVersion before installing or updating the add-in (Revit of other years can stay open). Still running: $($blockingRevit -join '; ')."
 }
 
 # ---------------------------------------------------------------------------
