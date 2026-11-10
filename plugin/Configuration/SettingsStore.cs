@@ -14,10 +14,10 @@ namespace revit_mcp_plugin.Configuration
 {
     /// <summary>
     /// <para>读写 <c>Commands\commandRegistry.json</c>。设置窗口与运行中的服务都用它，
-    /// 保证只有一条写路径（写整份文件，保留 commands 数组）。</para>
+    /// 保证只有一条写路径：每次只改自己那部分（settings 或 commands），文件其余内容原样保留。</para>
     /// <para>Reads and writes <c>Commands\commandRegistry.json</c>. Used by the settings
-    /// window and by the running services so there is a single write path; the whole
-    /// file is rewritten, keeping the commands array.</para>
+    /// window and by the running services so there is a single write path; each write
+    /// changes only its part (settings or commands) and keeps the rest of the file.</para>
     /// <para>同一进程内的读改写串行执行；写入先写临时文件再整体替换，中途崩溃不会留下空文件。</para>
     /// <para>Load-modify-save is serialized within the process, and a write goes to a
     /// temporary file that then replaces the target, so a crash mid-write cannot leave
@@ -43,35 +43,65 @@ namespace revit_mcp_plugin.Configuration
             }
         }
 
-        public static void Save(FrameworkConfig config)
+        /// <summary>
+        /// <para>在同一把锁内读文件、改 settings、写回。只写 ServiceSettings 认识的字段；settings 里和
+        /// 文件顶层本版本不认识的属性原样保留。失败时抛出且文件不变——文件为空、为 null、不是对象或
+        /// 不是有效 JSON 时也一样（不会用默认值重写）。</para>
+        /// <para>Read the file, change the settings and write it back under one lock. Only
+        /// the fields ServiceSettings knows are written; properties this version does not
+        /// know, in "settings" and at the top level, stay as they are. Throws on failure and
+        /// leaves the file unchanged - also when it is empty, "null", not an object or not
+        /// valid JSON (it is never rewritten with defaults).</para>
+        /// </summary>
+        /// <returns>The settings as written.</returns>
+        public static ServiceSettings UpdateSettings(Action<ServiceSettings> change)
         {
             lock (FileLock)
             {
                 string configPath = PathManager.GetCommandRegistryFilePath();
-                string output = JsonConvert.SerializeObject(config, Formatting.Indented);
+                string existing = File.Exists(configPath) ? File.ReadAllText(configPath) : null;
+                ServiceSettings written;
+                string output = ApplySettingsChange(existing, change, out written);
                 WriteAllTextAtomically(configPath, output, overwrite: true);
+                return written;
             }
         }
 
         /// <summary>
-        /// <para>改动 settings 并落盘。失败只记录，不抛给调用方（后台线程也会调用）。</para>
-        /// <para>Change settings and persist them. Failures are logged, not thrown: this
-        /// is also called from background threads.</para>
+        /// <para>UpdateSettings 的文本核心：输入原文件内容，返回改过 settings 的新内容。</para>
+        /// <para>Text core of <see cref="UpdateSettings"/>: takes the file's text and returns
+        /// it with the changed settings merged into its "settings" object.</para>
+        /// </summary>
+        public static string ApplySettingsChange(string registryJson, Action<ServiceSettings> change, out ServiceSettings written)
+        {
+            JObject root = ParseRegistryObject(registryJson);
+            JObject settings = root["settings"] as JObject;
+            if (settings == null)
+            {
+                settings = new JObject();
+                root["settings"] = settings;
+            }
+
+            ServiceSettings current = settings.ToObject<ServiceSettings>() ?? new ServiceSettings();
+            change(current);
+            foreach (JProperty property in JObject.FromObject(current).Properties())
+                settings[property.Name] = property.Value;
+
+            written = current;
+            return root.ToString(Formatting.Indented);
+        }
+
+        /// <summary>
+        /// <para>改动 settings 并落盘（见 UpdateSettings）。失败只记录，不抛给调用方：后台线程也会调用。</para>
+        /// <para>Change settings and persist them (see <see cref="UpdateSettings"/>). Failures
+        /// are logged, not thrown: this is also called from background threads.</para>
         /// </summary>
         /// <returns>true when the file was written.</returns>
         public static bool Update(Action<ServiceSettings> change, ILogger logger = null)
         {
             try
             {
-                lock (FileLock)
-                {
-                    var config = Load();
-                    if (config.Settings == null)
-                        config.Settings = new ServiceSettings();
-
-                    change(config.Settings);
-                    Save(config);
-                }
+                UpdateSettings(change);
                 return true;
             }
             catch (Exception ex)
@@ -105,23 +135,31 @@ namespace revit_mcp_plugin.Configuration
         /// <para>SaveCommands 的文本核心：输入原文件内容，返回只换了 "commands" 的新内容。</para>
         /// <para>Text core of <see cref="SaveCommands"/>: takes the file's text and returns it
         /// with only "commands" replaced. Other properties keep their values and order; date-like
-        /// strings stay strings. Empty input starts a new object.</para>
+        /// strings stay strings. Null (no file yet) starts a new object.</para>
         /// </summary>
         public static string ReplaceCommands(string registryJson, IEnumerable<CommandConfig> commands)
         {
-            JObject root = new JObject();
-            if (!string.IsNullOrWhiteSpace(registryJson))
-            {
-                var token = JsonConvert.DeserializeObject<JToken>(registryJson,
-                    new JsonSerializerSettings { DateParseHandling = DateParseHandling.None });
-                root = token as JObject;
-                if (root == null)
-                    throw new InvalidDataException(
-                        "commandRegistry.json does not contain a JSON object, so it was left unchanged.");
-            }
-
+            JObject root = ParseRegistryObject(registryJson);
             root["commands"] = JArray.FromObject(commands ?? new List<CommandConfig>());
             return root.ToString(Formatting.Indented);
+        }
+
+        // null = no file yet: a new object. An empty, "null", non-object or invalid file is
+        // refused (the file stays as it is), never replaced by defaults.
+        private static JObject ParseRegistryObject(string registryJson)
+        {
+            if (registryJson == null)
+                return new JObject();
+            if (string.IsNullOrWhiteSpace(registryJson))
+                throw new InvalidDataException(
+                    "commandRegistry.json is empty, so it was left unchanged. Repair it, or re-run the installer to restore it.");
+            var token = JsonConvert.DeserializeObject<JToken>(registryJson,
+                new JsonSerializerSettings { DateParseHandling = DateParseHandling.None });
+            var root = token as JObject;
+            if (root == null)
+                throw new InvalidDataException(
+                    "commandRegistry.json does not contain a JSON object, so it was left unchanged.");
+            return root;
         }
 
         /// <summary>
