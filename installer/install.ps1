@@ -25,8 +25,11 @@
     local  - Revit listens on TCP 127.0.0.1:18080 for a local MCP server.
     remote - Revit connects out to a WebSocket bridge server (-Server required).
     Default: the mode of the install being updated, or local for a fresh
-    install. Port, logLevel and the pairing are kept as well. Switching a paired
-    install to local drops its device token (it would lock the TCP port).
+    install. Port, logLevel and the pairing are kept as well; the command list is
+    the package's, every command enabled. Switching a paired install to local
+    drops its device token (it would lock the TCP port) and, unless
+    -AllowRemoteCode is given, allowRemoteCodeExecution; switching a local install
+    to remote does not carry its TCP secret over.
 
 .PARAMETER Server
     Site address of the bridge server, e.g. https://bridge.example.com.
@@ -39,7 +42,9 @@
     zip or a build output such as "plugin\bin\AddIn 2026 Release R26".
 
 .PARAMETER Pair
-    Pairing code from the site, in the form XXXX-XXXX. Remote mode only.
+    Pairing code from the site, in the form XXXX-XXXX, with -Server. For a
+    remote install: an existing remote install takes it without -Mode, a fresh
+    or local install needs -Mode remote.
     The installer redeems it at <Server>/api/v1/bridge/devices/redeem and
     stores the device id, device token and WebSocket URL it gets back. Codes
     are single use and expire after 10 minutes. Omit it to keep the pairing
