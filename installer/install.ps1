@@ -124,7 +124,7 @@ param(
     $singlePackageYear = "2026"
     # Years whose package is compiled but has not been loaded in a real Revit (README,
     # "Supported Revit years"). Keep both lists the same.
-    $notLoadTestedYears = @("2020")
+    $notLoadTestedYears = @("2020", "2027")
     # State shared with the helpers below (a hashtable, so they can change it).
     $run = @{ WorkDir = $null; Finished = $false; Completed = (New-Object System.Collections.Generic.List[string]) }
 
