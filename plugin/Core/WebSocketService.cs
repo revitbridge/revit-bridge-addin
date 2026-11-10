@@ -295,7 +295,7 @@ namespace revit_mcp_plugin.Core
 
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
-                    HandleServerClose((int?)result.CloseStatus, result.CloseStatusDescription);
+                    HandleServerClose((int?)result.CloseStatus, result.CloseStatusDescription, stopToken);
 
                     // 回一个关闭帧，让服务器干净地结束这条连接并立即释放本设备的登记，
                     // 否则下次重连可能被判为"已连接"（4002）。失败不影响后续流程。
@@ -342,10 +342,22 @@ namespace revit_mcp_plugin.Core
         /// <para>Handle the server's close frame: 4003 = unpaired/revoked (stop
         /// reconnecting), 4002 = this device is already connected elsewhere (keep
         /// the existing retry), anything else is an ordinary disconnect.</para>
+        /// <para>已停止的工作线程（Stop 之后、下一次 Start 之前收到的关闭帧）不再处理：
+        /// 它不能改服务状态，也不能在磁盘上收回 allowRemoteCodeExecution。</para>
+        /// <para>A worker that has been stopped (a close frame arriving between Stop and the
+        /// next Start) does nothing: it must not change the service's state or withdraw
+        /// allowRemoteCodeExecution on disk.</para>
         /// </summary>
-        private void HandleServerClose(int? closeCode, string description)
+        private void HandleServerClose(int? closeCode, string description, CancellationToken stopToken)
         {
             string detail = string.IsNullOrWhiteSpace(description) ? "" : ": " + description;
+
+            if (stopToken.IsCancellationRequested)
+            {
+                _logger.Info("已停止的连接收到关闭帧 {0}，已忽略 / A stopped connection received close {0}; ignored.",
+                    closeCode?.ToString() ?? "unknown");
+                return;
+            }
 
             if (closeCode == CloseUnpairedOrRevoked)
             {
