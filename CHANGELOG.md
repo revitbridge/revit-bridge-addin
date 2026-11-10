@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-11-10)
 
 The add-in is released for Revit 2020, 2021 and 2023-2026 instead of 2026 only, and the installer installs it for several Revit years at once. Each Revit year is its own install with its own settings, port and pairing. Install over 0.3.1; the configuration format, the commands and the wire formats are unchanged.
 
