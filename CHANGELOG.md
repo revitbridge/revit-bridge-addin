@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- New `dry_run_code_in_revit` (`code`, optional `parameters`, as for `send_code_to_revit`): runs a snippet and always rolls it back. It compiles through the same step as `send_code_to_revit` (a failed compile opens no transaction and returns `diagnostics`), runs the code in one transaction inside a transaction group, commits that transaction so that Revit reports what was added, modified and deleted and raises its warnings and errors, and then rolls the group back on every path, so the model keeps nothing and the undo list gets no entry. It never shows the confirmation dialog. Warnings are recorded and dismissed, errors are recorded and roll the transaction back without a dialog. The reply is `success`, `rolled_back`, `result`, `error`, `diagnostics`, `changes` (`added` / `modified` with `count`, `by_category` and the first 50 `ids`; `deleted` with `count` and `ids`; `note`), `failures` (`severity`, `text`, `element_ids`) and `fingerprint`. Same 60 s timeout as `send_code_to_revit`; a second dry run is refused while one that timed out is still running, and one Revit has not started in time is withdrawn.
+- `get_bridge_capabilities` reports `features.dry_run` (true when the method is registered); `protocol` stays 2.
+- In remote mode `dry_run_code_in_revit` needs `allowRemoteCodeExecution`, like `send_code_to_revit`; local mode is unchanged.
+- `send_code_to_revit`, its confirmation dialog and its reply are unchanged.
+
 ## 0.4.0 (2026-11-10)
 
 The add-in is released for Revit 2020, 2021 and 2023-2026 instead of 2026 only, and the installer installs it for several Revit years at once. Each Revit year is its own install with its own settings, port and pairing. Install over 0.3.1; the configuration format, the commands and the wire formats are unchanged.
