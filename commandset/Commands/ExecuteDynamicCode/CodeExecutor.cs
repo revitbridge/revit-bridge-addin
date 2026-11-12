@@ -123,20 +123,55 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
         /// <param name="cancellationToken">Cancels parsing and emitting (check_code_in_revit uses a 30 s timeout).</param>
         public static CompileOutcome Compile(string code, CancellationToken cancellationToken = default(CancellationToken))
         {
+            return Compile(code, null, cancellationToken);
+        }
+
+        /// <summary>
+        /// <para>同上，另把 <paramref name="sources"/> 里的完整 C# 文件放进同一次编译：每个文件各自是一棵语法树，
+        /// 不套外壳，片段可以调用其中定义的类型。黑名单同样检查这些文件；其中的诊断带 file（文件名）与该文件内的行列。
+        /// sources 为 null 或空时与只传片段的结果完全相同。</para>
+        /// <para>As above, and the complete C# files in <paramref name="sources"/> go into the same
+        /// compilation: each is its own syntax tree, not wrapped, and the snippet can call the types
+        /// they define. The blacklist checks these files too; their diagnostics carry file (the name)
+        /// and the line and column in that file. With sources null or empty the result is exactly
+        /// that of a compile of the snippet alone.</para>
+        /// </summary>
+        public static CompileOutcome Compile(string code, IReadOnlyList<CodeSource> sources, CancellationToken cancellationToken = default(CancellationToken))
+        {
             // .NET Framework years: Roslyn's dependencies must bind before the first parse (see DependencyResolver).
             DependencyResolver.EnsureRegistered();
             code = code ?? string.Empty;
+            IReadOnlyList<CodeSource> extra = sources ?? new CodeSource[0];
 
             List<Assembly> referencedAssemblies = CollectReferencedAssemblies();
-            string fingerprint = ComputeFingerprint(code, referencedAssemblies);
+            string fingerprint = ComputeFingerprint(code, referencedAssemblies, extra);
 
             string wrappedCode = WrapperPrefix + code + WrapperSuffix;
             SyntaxTree syntaxTree = CSharpSyntaxTree.ParseText(wrappedCode, cancellationToken: cancellationToken);
             var map = new UserCodeMap(syntaxTree.GetText(cancellationToken), WrapperPrefix.Length, code.Length);
+            var mapper = new DiagnosticMapper(syntaxTree, map, extra.Count > 0);
 
-            // 符号黑名单静态检查：命中即返回 RB0001，不编译、不抛异常。
+            // 附加文件按给定顺序，各自一棵树、用同样的（默认）解析选项，路径即文件名。
+            // Extra files in the order given, one tree each, the same (default) parse options, the
+            // name as the path.
+            var syntaxTrees = new List<SyntaxTree> { syntaxTree };
+            foreach (CodeSource source in extra)
+            {
+                SyntaxTree sourceTree = CSharpSyntaxTree.ParseText(source.Text, path: source.Name, cancellationToken: cancellationToken);
+                syntaxTrees.Add(sourceTree);
+                mapper.AddSource(sourceTree, source.Name);
+            }
+
+            // 符号黑名单静态检查：命中即返回 RB0001，不编译、不抛异常。先查片段，再按顺序查附加文件。
             // Symbol blacklist: a hit becomes an RB0001 diagnostic; nothing is compiled or thrown.
-            CodeDiagnostic forbidden = FindForbiddenSymbol(syntaxTree, map, cancellationToken);
+            // The snippet is checked first, then the extra files in order.
+            CodeDiagnostic forbidden = null;
+            foreach (SyntaxTree tree in syntaxTrees)
+            {
+                forbidden = FindForbiddenSymbol(tree, mapper, cancellationToken);
+                if (forbidden != null)
+                    break;
+            }
             if (forbidden != null)
             {
                 return new CompileOutcome
@@ -155,7 +190,7 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
 
             var compilation = CSharpCompilation.Create(
                 WrapperAssemblyName,
-                syntaxTrees: new[] { syntaxTree },
+                syntaxTrees: syntaxTrees,
                 references: references,
                 options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
 
@@ -163,11 +198,16 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
             {
                 var emitResult = compilation.Emit(ms, cancellationToken: cancellationToken);
 
-                // 错误在前、警告其次、信息最后，同级按位置；超过上限的只计数。
-                // Errors first, then warnings, then info, each in source order; beyond the cap only counted.
+                // 错误在前、警告其次、信息最后，同级按文件（片段在前，附加文件按给定顺序）再按位置；超过上限的只计数。
+                // 只有片段时文件序号恒为 0（不在源码里的为 -1），顺序与以前相同。
+                // Errors first, then warnings, then info, each by file (the snippet first, then the
+                // extra files in the order given) and then in source order; beyond the cap only
+                // counted. With the snippet alone the file index is always 0 (-1 outside any
+                // source), so the order is the one it always was.
                 var reported = emitResult.Diagnostics
                     .Where(d => !d.IsSuppressed && d.Severity != DiagnosticSeverity.Hidden)
                     .OrderBy(d => SeverityRank(d.Severity))
+                    .ThenBy(d => mapper.TreeIndex(d.Location))
                     .ThenBy(d => d.Location.IsInSource ? d.Location.SourceSpan.Start : -1)
                     .ToList();
 
@@ -175,7 +215,7 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
                 {
                     Compiled = emitResult.Success,
                     Compilation = compilation,
-                    Diagnostics = reported.Take(MaxDiagnostics).Select(d => ToCodeDiagnostic(d, map)).ToList(),
+                    Diagnostics = reported.Take(MaxDiagnostics).Select(d => ToCodeDiagnostic(d, mapper)).ToList(),
                     Truncated = Math.Max(0, reported.Count - MaxDiagnostics),
                     Fingerprint = fingerprint,
                     Image = emitResult.Success ? ms.ToArray() : null,
@@ -248,11 +288,23 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
         /// </summary>
         public static string ComputeFingerprint(string code)
         {
-            return ComputeFingerprint(code ?? string.Empty, CollectReferencedAssemblies());
+            return ComputeFingerprint(code, null);
         }
 
-        // sha256(code \0 wrapper_version \0 "name/version" lines of the references \0 addin_version)
-        private static string ComputeFingerprint(string code, IEnumerable<Assembly> referencedAssemblies)
+        /// <summary>
+        /// <para>同上，含附加文件（按给定顺序）。</para>
+        /// <para>As above, with the extra files (in the order given).</para>
+        /// </summary>
+        public static string ComputeFingerprint(string code, IReadOnlyList<CodeSource> sources)
+        {
+            return ComputeFingerprint(code ?? string.Empty, CollectReferencedAssemblies(), sources);
+        }
+
+        // sha256(code \0 wrapper_version \0 "name/version" lines of the references \0 addin_version
+        //        [\0 "sources " count, then per file \0 name length ":" name \0 text length ":" text])
+        // The sources part is only there when sources were given, so the fingerprint of a snippet
+        // alone is the one earlier versions computed. Lengths make the file boundaries unambiguous.
+        private static string ComputeFingerprint(string code, IEnumerable<Assembly> referencedAssemblies, IReadOnlyList<CodeSource> sources)
         {
             var referenceIds = referencedAssemblies
                 .Select(a => a.GetName())
@@ -265,6 +317,17 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
             input.Append(WrapperVersion.ToString(CultureInfo.InvariantCulture)).Append('\0');
             input.Append(string.Join("\n", referenceIds)).Append('\0');
             input.Append(BridgeInfo.AddinVersion);
+            if (sources != null && sources.Count > 0)
+            {
+                input.Append('\0').Append("sources ").Append(sources.Count.ToString(CultureInfo.InvariantCulture));
+                foreach (CodeSource source in sources)
+                {
+                    string name = source.Name ?? string.Empty;
+                    string text = source.Text ?? string.Empty;
+                    input.Append('\0').Append(name.Length.ToString(CultureInfo.InvariantCulture)).Append(':').Append(name);
+                    input.Append('\0').Append(text.Length.ToString(CultureInfo.InvariantCulture)).Append(':').Append(text);
+                }
+            }
 
             byte[] hash;
             using (var sha = SHA256.Create())
@@ -286,7 +349,7 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
         /// <para>遍历语法树的标识符，返回第一个被禁止的符号（无则 null）。</para>
         /// <para>Walk the identifiers of the tree and return the first forbidden one, or null.</para>
         /// </summary>
-        private static CodeDiagnostic FindForbiddenSymbol(SyntaxTree syntaxTree, UserCodeMap map, CancellationToken cancellationToken)
+        private static CodeDiagnostic FindForbiddenSymbol(SyntaxTree syntaxTree, DiagnosticMapper map, CancellationToken cancellationToken)
         {
             foreach (var token in syntaxTree.GetRoot(cancellationToken).DescendantTokens())
             {
@@ -306,7 +369,7 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
             return null;
         }
 
-        private static CodeDiagnostic ToCodeDiagnostic(Diagnostic d, UserCodeMap map)
+        private static CodeDiagnostic ToCodeDiagnostic(Diagnostic d, DiagnosticMapper map)
         {
             // 消息固定用英文（不随 Revit 界面语言变化），symbol 的提取依赖它。
             // Messages are always English (independent of the Revit UI language); symbol extraction relies on it.
@@ -415,6 +478,77 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
                 diagnostic.InWrapper = false;
             }
         }
+
+        /// <summary>
+        /// <para>按诊断所在的语法树分派：片段（外壳）里的交给 <see cref="UserCodeMap"/>，与以前相同；
+        /// 附加文件里的给出文件名与该文件内的 1 起行列。没有附加文件时 file 为 null（不输出），
+        /// 有附加文件时片段的诊断 file 为 ""。</para>
+        /// <para>Dispatches by the syntax tree a diagnostic is in: the snippet (wrapper) goes to
+        /// <see cref="UserCodeMap"/> as before; an extra file gives its name and the 1-based line and
+        /// column in that file. Without extra files, file stays null (not written); with them, a
+        /// snippet diagnostic has file "".</para>
+        /// </summary>
+        private sealed class DiagnosticMapper
+        {
+            private readonly SyntaxTree _snippetTree;
+            private readonly UserCodeMap _snippetMap;
+            private readonly string _snippetFile;
+            private readonly List<SyntaxTree> _sourceTrees = new List<SyntaxTree>();
+            private readonly List<string> _sourceNames = new List<string>();
+
+            public DiagnosticMapper(SyntaxTree snippetTree, UserCodeMap snippetMap, bool withSources)
+            {
+                _snippetTree = snippetTree;
+                _snippetMap = snippetMap;
+                _snippetFile = withSources ? string.Empty : null;
+            }
+
+            public void AddSource(SyntaxTree tree, string name)
+            {
+                _sourceTrees.Add(tree);
+                _sourceNames.Add(name);
+            }
+
+            /// <summary>0 for the snippet, 1.. for the extra files in order, -1 outside any source.</summary>
+            public int TreeIndex(RoslynLocation location)
+            {
+                if (location == null || !location.IsInSource)
+                    return -1;
+                if (ReferenceEquals(location.SourceTree, _snippetTree))
+                    return 0;
+                int index = _sourceTrees.FindIndex(tree => ReferenceEquals(tree, location.SourceTree));
+                return index < 0 ? -1 : index + 1;
+            }
+
+            public void Apply(RoslynLocation location, CodeDiagnostic diagnostic)
+            {
+                diagnostic.FileName = _snippetFile;
+
+                if (location != null && location.IsInSource && !ReferenceEquals(location.SourceTree, _snippetTree))
+                {
+                    int index = TreeIndex(location);
+                    if (index > 0)
+                    {
+                        var position = location.GetLineSpan().StartLinePosition;
+                        diagnostic.FileName = _sourceNames[index - 1];
+                        diagnostic.Line = position.Line + 1;
+                        diagnostic.Column = position.Character + 1;
+                        diagnostic.InWrapper = false;
+                    }
+                    else
+                    {
+                        // 不属于任何已知文件（不应发生）：与"不在源码里"相同处理。
+                        // In no known file (should not happen): treated as "not in source".
+                        diagnostic.Line = null;
+                        diagnostic.Column = null;
+                        diagnostic.InWrapper = true;
+                    }
+                    return;
+                }
+
+                _snippetMap.Apply(location, diagnostic);
+            }
+        }
     }
 
     /// <summary>
@@ -479,11 +613,21 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
         [JsonProperty("severity")]
         public string Severity { get; set; }
 
-        /// <summary>1-based line in the user code; null inside the wrapper.</summary>
+        /// <summary>
+        /// <para>附加文件里的诊断：该文件的 name。请求带了附加文件时，片段（外壳）里的诊断为 ""；
+        /// 没带附加文件时为 null，不输出，形状与以前相同。</para>
+        /// <para>For a diagnostic in an extra source file, that file's name. When the request sent
+        /// extra files, a diagnostic in the snippet (or wrapper) has ""; when it sent none this is
+        /// null and not written, so the shape is as before.</para>
+        /// </summary>
+        [JsonProperty("file", NullValueHandling = NullValueHandling.Ignore)]
+        public string FileName { get; set; }
+
+        /// <summary>1-based line in the user code, or in the extra file named by file; null inside the wrapper.</summary>
         [JsonProperty("line")]
         public int? Line { get; set; }
 
-        /// <summary>1-based column in the user code; null inside the wrapper.</summary>
+        /// <summary>1-based column in the user code, or in the extra file named by file; null inside the wrapper.</summary>
         [JsonProperty("column")]
         public int? Column { get; set; }
 
