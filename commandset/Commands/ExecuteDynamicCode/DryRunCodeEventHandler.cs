@@ -30,6 +30,7 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
 
         private string _code;
         private object[] _parameters;
+        private IReadOnlyList<CodeSource> _sources;
         private bool _queued;
         private bool _running;
         private DryRunResultInfo _result;
@@ -38,7 +39,7 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
         /// <para>登记一次试跑；已有一次在排队或运行时返回 false。</para>
         /// <para>Register a dry run; false while another one is queued or running.</para>
         /// </summary>
-        public bool TryQueue(string code, object[] parameters)
+        public bool TryQueue(string code, object[] parameters, IReadOnlyList<CodeSource> sources)
         {
             lock (_sync)
             {
@@ -47,6 +48,7 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
 
                 _code = code ?? string.Empty;
                 _parameters = parameters ?? Array.Empty<object>();
+                _sources = sources;
                 _result = null;
                 _queued = true;
                 _done.Reset();
@@ -93,6 +95,7 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
         {
             string code;
             object[] parameters;
+            IReadOnlyList<CodeSource> sources;
             lock (_sync)
             {
                 // 超时后已撤回，或没有排队的请求：什么也不做。
@@ -103,12 +106,13 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
                 _running = true;
                 code = _code;
                 parameters = _parameters;
+                sources = _sources;
             }
 
             DryRunResultInfo result = null;
             try
             {
-                result = Run(app, code, parameters);
+                result = Run(app, code, parameters, sources);
             }
             catch (Exception ex)
             {
@@ -143,7 +147,7 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
         /// <para>One complete dry run. Call it in Revit API context only. Before it returns the
         /// transaction group has been rolled back (or was never started).</para>
         /// </summary>
-        internal static DryRunResultInfo Run(UIApplication app, string code, object[] parameters)
+        internal static DryRunResultInfo Run(UIApplication app, string code, object[] parameters, IReadOnlyList<CodeSource> sources)
         {
             var result = new DryRunResultInfo();
             RevitApplication application = null;
@@ -154,10 +158,11 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
 
             try
             {
-                // 1. 编译（与 send_code_to_revit、check_code_in_revit 同一步）；不通过就不开事务。
-                // 1. Compile (the same step as send_code_to_revit and check_code_in_revit); no
-                //    transaction is opened when it fails.
-                var outcome = CodeExecutor.Compile(code);
+                // 1. 编译（与 send_code_to_revit、check_code_in_revit 同一步），附加源文件在同一次编译里；
+                //    不通过就不开事务。
+                // 1. Compile (the same step as send_code_to_revit and check_code_in_revit), the extra
+                //    source files in the same compilation; no transaction is opened when it fails.
+                var outcome = CodeExecutor.Compile(code, sources);
                 result.Fingerprint = outcome.Fingerprint ?? string.Empty;
                 if (!outcome.Compiled)
                 {
@@ -339,7 +344,7 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
             {
                 try
                 {
-                    result.Fingerprint = CodeExecutor.ComputeFingerprint(code);
+                    result.Fingerprint = CodeExecutor.ComputeFingerprint(code, sources);
                 }
                 catch (Exception)
                 {
