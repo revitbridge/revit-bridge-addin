@@ -12,6 +12,8 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
     /// send_code_to_revit, emitted to a memory stream, with diagnostics mapped to user-code
     /// lines. Loads no assembly, opens no transaction, raises no ExternalEvent and shows no
     /// dialog; it runs directly on the socket thread with a 30 s timeout.</para>
+    /// <para>可选 sources：与片段同一次编译的完整 C# 文件（同 dry_run_code_in_revit）。</para>
+    /// <para>Optional sources: complete C# files compiled together with the snippet (as for dry_run_code_in_revit).</para>
     /// </summary>
     public class CheckCodeCommand : IRevitCommand
     {
@@ -34,13 +36,18 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
             // "parameters" 只用于形状，不求值，这里不读取。
             // "parameters" only describes the shape and is never evaluated, so it is not read here.
 
+            // 可选的附加源文件（与 dry_run_code_in_revit 相同）；不合规在编译之前报错。没有时结果与以前完全相同。
+            // Optional extra source files (as for dry_run_code_in_revit); a request that breaks the
+            // limits fails before compiling. Without them the result is exactly what it was.
+            IReadOnlyList<CodeSource> sources = CodeSources.FromRequest(parameters);
+
             var result = new CheckCodeResult { WrapperVersion = CodeExecutor.WrapperVersion };
 
             using (var cts = new CancellationTokenSource(TimeoutMilliseconds))
             {
                 try
                 {
-                    var outcome = CodeExecutor.Compile(code, cts.Token);
+                    var outcome = CodeExecutor.Compile(code, sources, cts.Token);
                     result.Compiled = outcome.Compiled;
                     result.Diagnostics = outcome.Diagnostics;
                     result.Truncated = outcome.Truncated;
@@ -62,7 +69,7 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
             {
                 try
                 {
-                    result.Fingerprint = CodeExecutor.ComputeFingerprint(code);
+                    result.Fingerprint = CodeExecutor.ComputeFingerprint(code, sources);
                 }
                 catch (Exception)
                 {
