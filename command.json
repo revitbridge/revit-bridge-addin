@@ -124,6 +124,11 @@
       "assemblyPath": "RevitMCPCommandSet.dll"
     },
     {
+      "commandName": "dry_run_code_in_revit",
+      "description": "Run C# code like send_code_to_revit inside a transaction group that is always rolled back; returns the result, what it would add, modify and delete, and Revit's warnings and errors",
+      "assemblyPath": "RevitMCPCommandSet.dll"
+    },
+    {
       "commandName": "get_bridge_capabilities",
       "description": "Report protocol version, methods, features and Revit/runtime versions of this add-in",
       "assemblyPath": "RevitMCPCommandSet.dll"
