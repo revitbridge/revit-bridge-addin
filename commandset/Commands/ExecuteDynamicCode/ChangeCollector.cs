@@ -21,8 +21,28 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
             _document = document;
         }
 
+        // 撤销或事务组回滚报告的元素（加载器测试用来判断还原是否完成；试跑在回滚前已退订，不受影响）。
+        // Elements reported by an undo or a group rollback (the add-in test uses them to tell when the
+        // restore is complete; the dry run unsubscribes before its rollback and never sees them).
+        private readonly HashSet<ElementId> _reverted = new HashSet<ElementId>();
+
         /// <summary>Set when an event could not be read; the counts are then incomplete.</summary>
         public string Problem { get; private set; }
+
+        /// <summary>How many commits of this document were seen.</summary>
+        public int CommitEvents { get; private set; }
+
+        /// <summary>Ids the commits added (they must be gone after a restore).</summary>
+        public IEnumerable<ElementId> AddedIds => _added;
+
+        /// <summary>Ids the commits deleted (they must exist again after a restore).</summary>
+        public IEnumerable<ElementId> DeletedIds => _deleted;
+
+        /// <summary>Ids changed by a commit and not yet reported by an undo or a group rollback.</summary>
+        public int CountOutstanding()
+        {
+            return _added.Concat(_modified).Concat(_deleted).Distinct().Count(id => !_reverted.Contains(id));
+        }
 
         public void OnDocumentChanged(object sender, DocumentChangedEventArgs e)
         {
@@ -30,6 +50,16 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
             // An event handler must not throw into Revit: record it for Run to report.
             try
             {
+                if (e.Operation == UndoOperation.TransactionUndone || e.Operation == UndoOperation.TransactionGroupRolledBack)
+                {
+                    Document reverted = e.GetDocument();
+                    if (reverted is null || !reverted.Equals(_document))
+                        return;
+                    _reverted.UnionWith(e.GetAddedElementIds());
+                    _reverted.UnionWith(e.GetModifiedElementIds());
+                    _reverted.UnionWith(e.GetDeletedElementIds());
+                    return;
+                }
                 if (e.Operation != UndoOperation.TransactionCommitted)
                     return;
                 Document changed = e.GetDocument();
@@ -39,6 +69,7 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
                 _added.UnionWith(e.GetAddedElementIds());
                 _modified.UnionWith(e.GetModifiedElementIds());
                 _deleted.UnionWith(e.GetDeletedElementIds());
+                CommitEvents++;
             }
             catch (Exception ex)
             {

@@ -367,7 +367,7 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
         /// <para>Records every failure of the transaction; with no error it deletes the warnings and
         /// lets the commit continue, with an error it rolls back silently.</para>
         /// </summary>
-        private sealed class FailureRecorder : IFailuresPreprocessor
+        internal sealed class FailureRecorder : IFailuresPreprocessor
         {
             private readonly HashSet<string> _seen = new HashSet<string>(StringComparer.Ordinal);
 

@@ -129,6 +129,21 @@
       "assemblyPath": "RevitMCPCommandSet.dll"
     },
     {
+      "commandName": "test_addin_command_in_revit",
+      "description": "Run a built add-in command in the open model without installing it: clicks its picks, feeds its input file, reads back, then restores the model",
+      "assemblyPath": "RevitMCPCommandSet.dll"
+    },
+    {
+      "commandName": "zoom_view_in_revit",
+      "description": "Zoom the active view to an element with a margin, or to fit",
+      "assemblyPath": "RevitMCPCommandSet.dll"
+    },
+    {
+      "commandName": "capture_view_in_revit",
+      "description": "Save a PNG of the active view's rectangle, optionally zoomed to an element first",
+      "assemblyPath": "RevitMCPCommandSet.dll"
+    },
+    {
       "commandName": "get_bridge_capabilities",
       "description": "Report protocol version, methods, features and Revit/runtime versions of this add-in",
       "assemblyPath": "RevitMCPCommandSet.dll"
