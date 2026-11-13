@@ -8,4 +8,13 @@
     <VendorId>RevitBridge</VendorId>
     <VendorDescription>https://github.com/revitbridge</VendorDescription>
   </AddIn>
+  <AddIn Type="Command">
+    <Text>revit-bridge test loader</Text>
+    <Description>Runs a built add-in command for a revit-bridge test (test_addin_command). Started by the bridge; does nothing when clicked.</Description>
+    <Assembly>revit-bridge/RevitMCPPlugin.dll</Assembly>
+    <FullClassName>revit_mcp_plugin.Core.AddinTestLoader</FullClassName>
+    <AddInId>25A0CCCA-D8AA-4EA4-9A87-1E4889A4B605</AddInId>
+    <VendorId>RevitBridge</VendorId>
+    <VendorDescription>https://github.com/revitbridge</VendorDescription>
+  </AddIn>
 </RevitAddIns>

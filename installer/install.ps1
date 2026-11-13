@@ -443,10 +443,13 @@ param(
         } finally {
             $reader.Close()
         }
-        $addIn = $xml.RevitAddIns.AddIn
-        if ($null -eq $addIn) {
-            throw "$($manifest.Name) is not a Revit add-in manifest."
+        # The manifest also holds a Type="Command" entry (the add-in test loader); the
+        # add-in's identity, folder and DLL come from its single Type="Application" entry.
+        $applications = @($xml.SelectNodes("/RevitAddIns/AddIn[@Type='Application']"))
+        if ($applications.Count -ne 1) {
+            throw "$($manifest.Name) is not a revit-bridge manifest: expected exactly one AddIn of Type Application, found $($applications.Count)."
         }
+        $addIn = $applications[0]
         $assemblyRel = [string]$addIn.Assembly
         $folderName = Split-Path -Parent $assemblyRel
         if ([string]::IsNullOrWhiteSpace($folderName)) {
