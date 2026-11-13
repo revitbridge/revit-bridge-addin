@@ -71,7 +71,8 @@
     Settings > Connection.
 
 .PARAMETER AllowRemoteCode
-    Remote mode: allow send_code_to_revit, dry_run_code_in_revit and
+    Remote mode: allow send_code_to_revit, dry_run_code_in_revit,
+    test_addin_command_in_revit, capture_view_in_revit and
     manage_solidified_tools.
     Pairing with -Pair switches this on, because pairing is the act of
     authorising that server; each ad-hoc run still asks in Revit while

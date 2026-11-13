@@ -7,6 +7,7 @@ MIT lets you fork, modify and redistribute this add-in without asking. Before yo
 | Field | What to do |
 |---|---|
 | `ClientId` | Generate a fresh GUID: `[guid]::NewGuid().ToString().ToUpper()`. Never reuse `94B7DDE6-3238-488E-A668-B8C659155206` (revit-bridge) or `7FE2B868-5423-4D7A-A20D-5A6C9BA53F79` (upstream). Revit refuses to load two add-ins with the same `ClientId`. |
+| Test loader `AddInId` | The manifest's second entry (`Type="Command"`, the add-in test loader) has its own GUID, `25A0CCCA-D8AA-4EA4-9A87-1E4889A4B605`. Give it a fresh one too and put the same value, in lower case, into `LoaderAddInId` in `commandset/Commands/AddinTest/TestAddinCommand.cs`. |
 | `Name` | Your add-in name, e.g. `my-revit-bridge`. |
 | `VendorId` | Your own ASCII vendor id (Autodesk asks for a unique one), e.g. `MyCompany`. |
 | `VendorDescription` | Your URL or contact. |
