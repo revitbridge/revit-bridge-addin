@@ -59,11 +59,16 @@ namespace revit_mcp_plugin.Core
         // check_code_in_revit (compile only) and get_bridge_capabilities (read-only metadata)
         // have no side effects and are deliberately not listed here. dry_run_code_in_revit
         // rolls its model changes back but still runs remotely supplied code in Revit, so it is.
+        // test_addin_command_in_revit 载入并运行本机 DLL；capture_view_in_revit 往调用方给的路径写文件：同样在列。
+        // test_addin_command_in_revit loads and runs a local DLL and capture_view_in_revit writes a file
+        // to a caller-chosen path: listed too.
         private static readonly HashSet<string> CodeExecutionMethods = new HashSet<string>(StringComparer.Ordinal)
         {
             "send_code_to_revit",
             "manage_solidified_tools",
             "dry_run_code_in_revit",
+            "test_addin_command_in_revit",
+            "capture_view_in_revit",
         };
 
         // 中继的关闭码（阶段 7 规格 §3）
