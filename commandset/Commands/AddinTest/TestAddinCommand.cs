@@ -14,14 +14,14 @@ namespace RevitMCPCommandSet.Commands.AddinTest
     /// <para>在打开的 Revit 里测试一个编译好的插件命令，不安装、不留改动。顺序（任务书 §4.3，硬要求）：
     /// 校验并编译读回片段；DLL 读成字节、算哈希、写进新的影子目录（原文件不被占用）；写输入文件；缩放（此后不动视图）；
     /// 在 API 上下文里把全部点选换算成屏幕坐标、载入命令、投递加载器；等加载器报告已调用 Execute 后在本线程点选
-    /// （丢了的最后一次点击最多重点到三次）；超时则截图、按 Esc；加载器里读回、统计、还原；读结果文件。</para>
+    /// （丢了的最后一次点击最多重点到三次）；超时通过后台窗口命令取消对话框；加载器里读回、统计、还原；读结果文件。</para>
     /// <para>Tests a built add-in command in the open Revit without installing it and without keeping
     /// anything. Order (work plan section 4.3, required): check and compile the read-back; read the DLL
     /// as bytes, hash them and write them into a fresh shadow folder (the original file is never held
     /// open); write the input file; zoom (the view is not touched after this); in API context map every
     /// pick to a screen pixel, load the command and post the loader; once the loader reports that it
     /// called Execute, click the picks from this thread (a lost last click is repeated, three attempts at
-    /// most); on a timeout take a picture and press Escape; read back, count and restore in the loader;
+    /// most); on a timeout cancel the identified dialog with a native window command; read back, count and restore in the loader;
     /// read the result file.</para>
     /// </summary>
     public class TestAddinCommand : ApiCallCommandBase
@@ -163,16 +163,24 @@ namespace RevitMCPCommandSet.Commands.AddinTest
             // 5. 点选：先等命令真正进入等待，再置前、按序点击。
             // 5. Picks: give the command time to reach its prompt, bring Revit to the front, click in order.
             session.CommandReturned.WaitOne(ClickDelayMs);
-            reply.ForegroundOk = Desktop.BringToFront(prepared.MainWindow);
+            reply.ForegroundOk = request.Picks.Count == 0;
             DateTime lastClick = DateTime.UtcNow;
             for (int i = 0; i < request.Picks.Count && !session.CommandReturned.WaitOne(0); i++)
             {
+                while (!session.CommandReturned.WaitOne(0) && DateTime.UtcNow < deadline &&
+                    !prepared.Dialogs.FocusForPick())
+                    session.CommandReturned.WaitOne(250);
+                if (session.CommandReturned.WaitOne(0) || DateTime.UtcNow >= deadline)
+                    break;
+                if (!prepared.Dialogs.CanClickPick()) { i--; continue; }
+                reply.ForegroundOk = true;
                 PickRequest pick = request.Picks[i];
                 var done = new PickDone { Requested = Requested(pick), Screen = prepared.Points[i], Attempts = 1 };
-                if (pick.IsEscape)
+                if (pick.IsEscape && prepared.Dialogs.CanClickPick())
                     Desktop.Key(Desktop.VkEscape);
                 else
-                    Desktop.Click(done.Screen[0], done.Screen[1]);
+                    if (pick.IsEscape || !Desktop.Click(done.Screen[0], done.Screen[1], prepared.Dialogs.CanClickPick))
+                    { i--; continue; }
                 reply.PicksDone.Add(done);
                 lastClick = DateTime.UtcNow;
                 if (i < request.Picks.Count - 1)
@@ -185,31 +193,40 @@ namespace RevitMCPCommandSet.Commands.AddinTest
             while (!session.CommandReturned.WaitOne(1000) && DateTime.UtcNow < deadline)
             {
                 if (last != null && last.Screen != null && last.Attempts < MaxAttempts &&
+                    prepared.Dialogs.CanSendPick() &&
                     (DateTime.UtcNow - lastClick).TotalMilliseconds >= RetryAfterMs)
                 {
-                    reply.ForegroundOk = Desktop.BringToFront(prepared.MainWindow);
-                    Desktop.Click(last.Screen[0], last.Screen[1]);
-                    last.Attempts++;
+                    reply.ForegroundOk = prepared.Dialogs.FocusForPick();
+                    if (reply.ForegroundOk && Desktop.Click(last.Screen[0], last.Screen[1], prepared.Dialogs.CanClickPick))
+                        last.Attempts++;
                     lastClick = DateTime.UtcNow;
                 }
             }
 
-            // 7. 超时：截图存档，按 Esc 让命令退出。
-            // 7. Timeout: keep a picture, press Escape until the command ends.
+            // 7. 超时：只关闭已确定归属的新对话框；不能确定时不发送任何输入。
+            // 7. Timeout: close only the identified new dialog. Never infer a pick
+            // prompt from absence of a matched dialog, or fall back to input.
             if (!session.CommandReturned.WaitOne(0))
             {
                 reply.TimedOut = true;
-                reply.Screenshot = Screenshot(reply, "addin-test-timeout");
                 for (int round = 0; round < 2 && !session.CommandReturned.WaitOne(0); round++)
                 {
-                    Desktop.BringToFront(prepared.MainWindow);
-                    for (int k = 0; k < 4; k++)
-                        Desktop.Key(Desktop.VkEscape);
-                    session.CommandReturned.WaitOne(10000);
+                    if (!prepared.Dialogs.CloseOwnedModal(out string cancelError))
+                    {
+                        // A slow Close handler can finish after the native send's
+                        // deadline. Still wait independently and restore if it ends.
+                        if (!session.CommandReturned.WaitOne(5000))
+                            reply.AddError(cancelError);
+                        break;
+                    }
+                    session.CommandReturned.WaitOne(5000);
                 }
                 if (!session.CommandReturned.WaitOne(0))
                 {
-                    reply.AddError("The command did not end after Escape; the test is still running in Revit and restores the model when the command ends.");
+                    reply.AddError("The command did not end after cancellation; the test is still running in Revit. " +
+                        (request.Restore == AddinTestRequest.RestoreUndo
+                            ? "Undo restoration requires recovery after the command ends."
+                            : "The loader will attempt group rollback when the command ends; restoration is not confirmed."));
                     return;
                 }
             }
@@ -243,6 +260,7 @@ namespace RevitMCPCommandSet.Commands.AddinTest
 
         private sealed class Prepared
         {
+            public DialogAutomation Dialogs;
             public bool Loaded;
             public bool Posted;
             public string Error = string.Empty;
@@ -328,6 +346,7 @@ namespace RevitMCPCommandSet.Commands.AddinTest
             }
             session.Command = command;
             session.Restore = request.Restore;
+            prepared.Dialogs = new DialogAutomation(app.MainWindowHandle, session.CommandReturned);
             app.PostCommand(loader);
             prepared.Posted = true;
             prepared.MainWindow = app.MainWindowHandle;

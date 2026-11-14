@@ -43,14 +43,17 @@ namespace RevitMCPCommandSet.Commands.AddinTest
         [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr obj);
         [DllImport("gdi32.dll")] private static extern bool DeleteDC(IntPtr dc);
 
-        public static void Click(int x, int y)
+        public static bool Click(int x, int y, Func<bool> allowed = null)
         {
+            if (allowed != null && !allowed()) return false;
             SetCursorPos(x, y);
             Thread.Sleep(400);
+            if (allowed != null && !allowed()) return false;
             mouse_event(MouseLeftDown, 0, 0, 0, UIntPtr.Zero);
             Thread.Sleep(80);
             mouse_event(MouseLeftUp, 0, 0, 0, UIntPtr.Zero);
             Thread.Sleep(400);
+            return true;
         }
 
         public static void MoveCursor(int x, int y)
