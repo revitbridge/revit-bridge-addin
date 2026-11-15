@@ -187,7 +187,11 @@ namespace RevitMCPCommandSet.Commands.AddinTest
         [JsonProperty("timed_out")] public bool TimedOut { get; set; }
         [JsonProperty("foreground_ok")] public bool ForegroundOk { get; set; }
 
-        /// <summary>Path of a picture of the Revit window, taken on a timeout or a load failure only.</summary>
+        /// <summary>
+        /// <para>Revit 窗口截图的路径，只在载入失败时截取（超时不截图）；否则为空。</para>
+        /// <para>Path of a picture of the Revit window, taken on a load failure only (not on a timeout);
+        /// empty otherwise.</para>
+        /// </summary>
         [JsonProperty("screenshot")] public string Screenshot { get; set; } = string.Empty;
 
         [JsonProperty("dll_sha256")] public string DllSha256 { get; set; } = string.Empty;

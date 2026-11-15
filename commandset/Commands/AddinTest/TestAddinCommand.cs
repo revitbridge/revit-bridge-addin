@@ -34,7 +34,6 @@ namespace RevitMCPCommandSet.Commands.AddinTest
         private const int StepTimeoutMs = 30000;
         private const int LoaderStartMs = 20000;
         private const int LoaderSliceMs = 4000;
-        private const int MaxLoaderPosts = 4;
         private const int LoaderFinishMs = 30000;
         private const int ClickDelayMs = 1500;
         private const int PickPauseMs = 1000;
@@ -155,10 +154,11 @@ namespace RevitMCPCommandSet.Commands.AddinTest
 
             // 4. 等加载器调用被测命令。Revit 在某些短暂的输入状态下会悄悄丢掉投递的命令：每等一段还没开始，
             //    就回到 API 上下文重新投递（总时限不变，最多投递四次）。到时仍没开始就撤回：什么也没运行。
+            //    投递次数由会话计数并限制，这里只读。
             // 4. Wait for the loader to call the command. Revit silently drops a posted command in some
             //    transient input states: after each slice without a start, post it again from API context
             //    (same total budget, four posts at most). If it never starts, withdraw: nothing ran.
-            int posts = 1;
+            //    The session counts the posts and enforces the limit; this loop only reads the count.
             string lastRepost = null;
             var startClock = System.Diagnostics.Stopwatch.StartNew();
             while (!session.Executing.WaitOne(Math.Max(0, Math.Min(LoaderSliceMs, LoaderStartMs - (int)startClock.ElapsedMilliseconds))))
@@ -166,7 +166,7 @@ namespace RevitMCPCommandSet.Commands.AddinTest
                 int left = LoaderStartMs - (int)startClock.ElapsedMilliseconds;
                 if (left <= 0)
                     break;
-                if (posts >= MaxLoaderPosts)
+                if (session.LoaderPosts >= AddinTestSession.MaxLoaderPosts)
                     continue;
 
                 // 重投这一步不超过剩余时限，也不超过一段（Revit 不空闲时外部事件会迟迟不执行；加载器此时开始的话，
@@ -179,7 +179,6 @@ namespace RevitMCPCommandSet.Commands.AddinTest
                     switch ((RepostOutcome)CallApi(app => Repost(app, session), Math.Min(left, LoaderSliceMs)))
                     {
                         case RepostOutcome.Posted:
-                            posts++;
                             lastRepost = null;
                             break;
                         case RepostOutcome.NotRegistered:
@@ -197,6 +196,9 @@ namespace RevitMCPCommandSet.Commands.AddinTest
             }
             if (!session.Executing.WaitOne(0) && session.CancelIfNotStarted())
             {
+                // 撤回之后计数不会再变：每次投递都在 Gate 里先确认未撤回。
+                // After the withdrawal the count is final: every post checks under Gate that it was not withdrawn.
+                int posts = session.LoaderPosts;
                 string posted = posts == 1
                     ? "posted once; " + (lastRepost ?? "Revit accepted the post but never ran it")
                     : $"posted {posts} times; " + (lastRepost ?? "Revit accepted each post but never ran it");
@@ -212,22 +214,41 @@ namespace RevitMCPCommandSet.Commands.AddinTest
             session.CommandReturned.WaitOne(ClickDelayMs);
             reply.ForegroundOk = request.Picks.Count == 0;
             DateTime lastClick = DateTime.UtcNow;
+            // 最近一次拒绝点击是因为点不在 Revit 上（最小化、屏幕外、被别的窗口盖住）时的说明；否则为 null。
+            // Why the last refused click was refused when the point was not on Revit (minimized, off
+            // screen, covered by another window); null when the last refusal had another reason.
+            string pointRefusal = null;
             for (int i = 0; i < request.Picks.Count && !session.CommandReturned.WaitOne(0); i++)
             {
                 while (!session.CommandReturned.WaitOne(0) && DateTime.UtcNow < deadline &&
                     !prepared.Dialogs.FocusForPick())
+                {
+                    pointRefusal = null;
                     session.CommandReturned.WaitOne(250);
+                }
                 if (session.CommandReturned.WaitOne(0) || DateTime.UtcNow >= deadline)
                     break;
-                if (!prepared.Dialogs.CanClickPick()) { i--; continue; }
+                if (!prepared.Dialogs.CanClickPick()) { pointRefusal = null; i--; continue; }
                 reply.ForegroundOk = true;
                 PickRequest pick = request.Picks[i];
                 var done = new PickDone { Requested = Requested(pick), Screen = prepared.Points[i], Attempts = 1 };
-                if (pick.IsEscape && prepared.Dialogs.CanClickPick())
+                if (pick.IsEscape)
+                {
+                    if (!prepared.Dialogs.CanClickPick()) { pointRefusal = null; i--; continue; }
                     Desktop.Key(Desktop.VkEscape);
-                else
-                    if (pick.IsEscape || !Desktop.Click(done.Screen[0], done.Screen[1], prepared.Dialogs.CanClickPick))
-                    { i--; continue; }
+                }
+                else if (!Desktop.Click(done.Screen[0], done.Screen[1],
+                    () => prepared.Dialogs.CanClickPickAt(done.Screen[0], done.Screen[1])))
+                {
+                    // 被拒的点选重试到期限为止；每一轮都有等待（这里，以及 FocusForPick 与 Click 里的）。
+                    // A refused pick is retried until the deadline; every pass waits (here, and in
+                    // FocusForPick and Click).
+                    pointRefusal = Refusal($"The click for picks[{i}]", prepared.Dialogs.PointRefusal);
+                    session.CommandReturned.WaitOne(250);
+                    i--;
+                    continue;
+                }
+                pointRefusal = null;
                 reply.PicksDone.Add(done);
                 lastClick = DateTime.UtcNow;
                 if (i < request.Picks.Count - 1)
@@ -239,13 +260,25 @@ namespace RevitMCPCommandSet.Commands.AddinTest
             PickDone last = reply.PicksDone.Count == request.Picks.Count ? reply.PicksDone.LastOrDefault() : null;
             while (!session.CommandReturned.WaitOne(1000) && DateTime.UtcNow < deadline)
             {
+                // 对话框挡住时，最近的拒绝原因就不再是点。
+                // While a dialog blocks, the latest reason not to click is no longer the point.
+                if (pointRefusal != null && !prepared.Dialogs.CanSendPick())
+                    pointRefusal = null;
                 if (last != null && last.Screen != null && last.Attempts < MaxAttempts &&
                     prepared.Dialogs.CanSendPick() &&
                     (DateTime.UtcNow - lastClick).TotalMilliseconds >= RetryAfterMs)
                 {
                     reply.ForegroundOk = prepared.Dialogs.FocusForPick();
-                    if (reply.ForegroundOk && Desktop.Click(last.Screen[0], last.Screen[1], prepared.Dialogs.CanClickPick))
+                    if (!reply.ForegroundOk)
+                        pointRefusal = null;
+                    else if (Desktop.Click(last.Screen[0], last.Screen[1],
+                        () => prepared.Dialogs.CanClickPickAt(last.Screen[0], last.Screen[1])))
+                    {
                         last.Attempts++;
+                        pointRefusal = null;
+                    }
+                    else
+                        pointRefusal = Refusal($"The repeated click for picks[{request.Picks.Count - 1}]", prepared.Dialogs.PointRefusal);
                     lastClick = DateTime.UtcNow;
                 }
             }
@@ -256,6 +289,8 @@ namespace RevitMCPCommandSet.Commands.AddinTest
             if (!session.CommandReturned.WaitOne(0))
             {
                 reply.TimedOut = true;
+                if (pointRefusal != null)
+                    reply.AddError(pointRefusal + ".");
                 for (int round = 0; round < 2 && !session.CommandReturned.WaitOne(0); round++)
                 {
                     if (!prepared.Dialogs.CloseOwnedModal(out string cancelError))
@@ -271,6 +306,7 @@ namespace RevitMCPCommandSet.Commands.AddinTest
                 if (!session.CommandReturned.WaitOne(0))
                 {
                     reply.AddError("The command did not end after cancellation; the test is still running in Revit. " +
+                        "Further tests are refused until the command is ended in Revit. " +
                         (request.Restore == AddinTestRequest.RestoreUndo
                             ? "Undo restoration requires recovery after the command ends."
                             : "The loader will attempt group rollback when the command ends; restoration is not confirmed."));
@@ -323,6 +359,11 @@ namespace RevitMCPCommandSet.Commands.AddinTest
             // The view and the picks are checked before loading: when they fail nothing is loaded.
             try
             {
+                // 最小化时换算出的点在屏幕外（会点到别处）：像视图不合格一样拒绝，什么也不载入。
+                // Minimized, the mapped points are off screen (a click would land elsewhere): refused like
+                // an unsuitable view, nothing is loaded.
+                if (DialogAutomation.IsMinimized(app.MainWindowHandle))
+                    throw new InvalidOperationException(DialogAutomation.MinimizedMessage);
                 UIView uiView = ViewTools.ActiveUIView(app, out View view);
                 if (!(view is ViewPlan))
                     throw new InvalidOperationException("The active view is not a plan view: " + view.Name + " (" + view.ViewType + ").");
@@ -399,38 +440,46 @@ namespace RevitMCPCommandSet.Commands.AddinTest
             // From here on a loader invocation takes this test. If the first post fails the test is
             // withdrawn, so an older post still queued cannot run it with nobody clicking the picks.
             session.Arm();
+            bool posted;
             try
             {
-                app.PostCommand(loader);
+                posted = session.PostLoader(() => app.PostCommand(loader));
             }
             catch
             {
                 session.CancelIfNotStarted();
                 throw;
             }
+            if (!posted)
+            {
+                // 调用方已经放弃（这一步超时后撤回了测试）。
+                // The caller gave up already (this step timed out and the test was withdrawn).
+                prepared.Error = "The test was withdrawn before the loader was posted.";
+                return prepared;
+            }
             prepared.Posted = true;
             prepared.MainWindow = app.MainWindowHandle;
             return prepared;
         }
 
-        private enum RepostOutcome { Posted, NotWaiting, NotRegistered, CannotPost }
+        private enum RepostOutcome { Posted, NotPosted, NotRegistered, CannotPost }
 
-        // 重新投递加载器（API 上下文，每次一个外部事件）：只在测试已就绪、加载器既未开始也未撤回时投递。
-        // PostCommand 的异常（例如上一次投递还在排队）交给调用方记下。
-        // Post the loader again (API context, one external event each time), only while the test is armed
-        // and the loader has neither started nor been withdrawn. An exception from PostCommand (for
-        // example while an earlier post is still queued) goes to the caller, which records it.
+        // 重新投递加载器（API 上下文，每次一个外部事件）：只在测试已就绪、加载器既未开始也未撤回、投递未满四次时投递
+        // （最后一道判断与计数在会话的 Gate 里）。PostCommand 的异常（例如上一次投递还在排队）交给调用方记下。
+        // Post the loader again (API context, one external event each time), only while the test is armed,
+        // the loader has neither started nor been withdrawn and fewer than four posts were made (the final
+        // check and the count are under the session's Gate). An exception from PostCommand (for example
+        // while an earlier post is still queued) goes to the caller, which records it.
         private static object Repost(UIApplication app, AddinTestSession session)
         {
             if (!session.AwaitingLoader)
-                return RepostOutcome.NotWaiting;
+                return RepostOutcome.NotPosted;
             RevitCommandId loader = RevitCommandId.LookupCommandId(LoaderAddInId);
             if (loader == null)
                 return RepostOutcome.NotRegistered;
             if (!app.CanPostCommand(loader))
                 return RepostOutcome.CannotPost;
-            app.PostCommand(loader);
-            return RepostOutcome.Posted;
+            return session.PostLoader(() => app.PostCommand(loader)) ? RepostOutcome.Posted : RepostOutcome.NotPosted;
         }
 
         private void RestoreByUndo(AddinTestSession session, AddinTestResult reply)
@@ -598,6 +647,16 @@ namespace RevitMCPCommandSet.Commands.AddinTest
                 types = ex.Types.Where(t => t != null).ToArray();
             }
             return types.Where(t => !t.IsAbstract && typeof(IExternalCommand).IsAssignableFrom(t)).Select(t => t.FullName);
+        }
+
+        // 点不在 Revit 上而没点的那一句（超时时加进 error）；reason 为 null 时返回 null。
+        // The sentence for a pick not clicked because its point is not on Revit (added to error on a
+        // timeout); null when reason is null.
+        private static string Refusal(string click, string reason)
+        {
+            return reason == null
+                ? null
+                : $"{click} was not sent because its screen point is not on Revit's window ({reason}); keep Revit restored and the point visible in the view";
         }
 
         private static JToken Requested(PickRequest pick)

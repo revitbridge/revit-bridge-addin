@@ -25,11 +25,15 @@ namespace RevitMCPCommandSet.Commands.AddinTest
         public const string ChangesNote =
             "Restored: the ids in added no longer exist; modified and deleted elements are back as they were before the test (see restored_clean).";
 
+        /// <summary>How often the loader is posted for one test at most, the first post included.</summary>
+        public const int MaxLoaderPosts = 4;
+
         private static readonly object Gate = new object();
         private static AddinTestSession _current;
 
         private readonly Dictionary<string, Assembly> _shadowAssemblies = new Dictionary<string, Assembly>(StringComparer.OrdinalIgnoreCase);
         private bool _armed;
+        private int _posts;
         private bool _loaderStarted;
         private bool _cancelled;
         private bool _callerDone;
@@ -96,6 +100,36 @@ namespace RevitMCPCommandSet.Commands.AddinTest
         public bool AwaitingLoader
         {
             get { lock (Gate) return _armed && !_loaderStarted && !_cancelled; }
+        }
+
+        /// <summary>How often the loader was posted for this test (posts that Revit accepted).</summary>
+        public int LoaderPosts
+        {
+            get { lock (Gate) return _posts; }
+        }
+
+        /// <summary>
+        /// <para>（API 上下文）投递加载器并计数：只在测试已就绪、加载器既未开始也未撤回、且投递少于
+        /// <see cref="MaxLoaderPosts"/> 次时调用 <paramref name="post"/>。判断、投递、计数都在 Gate 里，
+        /// 所以撤回要么在前（不投递），要么在后（这次投递已计入）；套接字一侧超时但仍在运行的一步也不会多投。
+        /// <paramref name="post"/> 抛出的异常不计数，原样抛出。返回是否投递了。</para>
+        /// <para>(API context) Post the loader and count it: <paramref name="post"/> is called only while
+        /// the test is armed, the loader has neither started nor been withdrawn and fewer than
+        /// <see cref="MaxLoaderPosts"/> posts were made. Check, post and count happen under Gate, so a
+        /// withdrawal comes either first (nothing is posted) or after (this post is counted), and a step
+        /// that timed out on the socket side but still runs cannot post once too often. An exception from
+        /// <paramref name="post"/> is not counted and propagates. Returns whether it posted.</para>
+        /// </summary>
+        public bool PostLoader(Action post)
+        {
+            lock (Gate)
+            {
+                if (!_armed || _loaderStarted || _cancelled || _posts >= MaxLoaderPosts)
+                    return false;
+                post();
+                _posts++;
+                return true;
+            }
         }
 
         /// <summary>True when the loader had not started and now never will.</summary>

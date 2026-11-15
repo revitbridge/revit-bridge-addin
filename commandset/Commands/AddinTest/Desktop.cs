@@ -43,9 +43,16 @@ namespace RevitMCPCommandSet.Commands.AddinTest
         [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr obj);
         [DllImport("gdi32.dll")] private static extern bool DeleteDC(IntPtr dc);
 
+        /// <summary>
+        /// <para>在 (x, y) 左键单击：先移光标、等 400 ms，再问 <paramref name="allowed"/>（这时光标已在目标点上，
+        /// 可以检查光标位置和点下的窗口），允许才按下。调用方在调用之前自己检查对话框与前台。</para>
+        /// <para>Left click at (x, y): move the cursor, wait 400 ms, then ask <paramref name="allowed"/>
+        /// (the cursor is on the target by then, so it can check the cursor position and the window under
+        /// it) and press only when it allows. Callers check dialogs and the foreground themselves before
+        /// calling.</para>
+        /// </summary>
         public static bool Click(int x, int y, Func<bool> allowed = null)
         {
-            if (allowed != null && !allowed()) return false;
             SetCursorPos(x, y);
             Thread.Sleep(400);
             if (allowed != null && !allowed()) return false;

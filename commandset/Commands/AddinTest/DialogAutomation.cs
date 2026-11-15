@@ -16,6 +16,19 @@ namespace RevitMCPCommandSet.Commands.AddinTest
         private readonly WaitHandle commandReturned;
         private delegate bool EnumWindowProc(IntPtr window, IntPtr state);
 
+        /// <summary>The refusal when Revit's main window is minimized (the model view is not on screen).</summary>
+        internal const string MinimizedMessage =
+            "Revit's window is minimized; restore it so that the model view is visible on screen, then run the test again.";
+
+        private const uint GaRootOwner = 3;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativePoint { public int X; public int Y; }
+
+        [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr window);
+        [DllImport("user32.dll")] private static extern bool GetCursorPos(out NativePoint point);
+        [DllImport("user32.dll")] private static extern IntPtr WindowFromPoint(NativePoint point);
+        [DllImport("user32.dll")] private static extern IntPtr GetAncestor(IntPtr window, uint flags);
         [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowProc callback, IntPtr state);
         [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr window, uint command);
         [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr window);
@@ -34,8 +47,22 @@ namespace RevitMCPCommandSet.Commands.AddinTest
             threadId = GetWindowThreadProcessId(main, out processId);
             if (main == IntPtr.Zero || threadId == 0 || !IsWindowEnabled(main))
                 throw new InvalidOperationException("Revit's main window is unavailable or blocked by an existing dialog.");
+            // 最小化时换算出的屏幕坐标不在屏幕上：不准备点选。
+            // Minimized, the mapped screen points are off screen: no picks are prepared.
+            if (IsIconic(main))
+                throw new InvalidOperationException(MinimizedMessage);
             existing = new HashSet<IntPtr>(Windows(false));
         }
+
+        /// <summary>True when <paramref name="window"/> is minimized (IsIconic).</summary>
+        internal static bool IsMinimized(IntPtr window) => IsIconic(window);
+
+        /// <summary>
+        /// <para>最近一次 <see cref="CanClickPickAt"/> 因点本身不成立而拒绝时的原因；通过了或因别的原因拒绝时为 null。</para>
+        /// <para>Why the last <see cref="CanClickPickAt"/> refused because of the point itself; null when it
+        /// passed or refused for another reason.</para>
+        /// </summary>
+        internal string PointRefusal { get; private set; }
 
         private List<IntPtr> Windows(bool visibleOnly)
         {
@@ -55,6 +82,40 @@ namespace RevitMCPCommandSet.Commands.AddinTest
         private List<IntPtr> NewWindows() => Windows(true).Where(window => !existing.Contains(window)).ToList();
         internal bool CanSendPick() => !commandReturned.WaitOne(0) && IsWindow(main) && IsWindowEnabled(main) && NewWindows().Count == 0;
         internal bool CanClickPick() => CanSendPick() && GetForegroundWindow() == main;
+
+        /// <summary>
+        /// <para>光标已移到 (x, y) 之后、按下之前调用：<see cref="CanClickPick"/> 成立，Revit 没有最小化，光标确实在
+        /// (x, y)（屏幕外的点会被夹到屏幕边上），且这个像素所在窗口的根所有者是 Revit 主窗口（主窗口本身或它拥有的
+        /// 浮动面板、视图窗口也算 Revit）。</para>
+        /// <para>Called after the cursor was moved to (x, y) and before the button goes down:
+        /// <see cref="CanClickPick"/> holds, Revit is not minimized, the cursor really is at (x, y) (a point
+        /// off screen is clamped to the screen edge), and the window under that pixel has Revit's main
+        /// window as its root owner (the main window itself, or a palette or view window it owns, counts
+        /// as Revit).</para>
+        /// </summary>
+        internal bool CanClickPickAt(int x, int y)
+        {
+            PointRefusal = null;
+            if (!CanClickPick())
+                return false;
+            if (IsIconic(main))
+            {
+                PointRefusal = "Revit is minimized";
+                return false;
+            }
+            if (!GetCursorPos(out NativePoint cursor) || cursor.X != x || cursor.Y != y)
+            {
+                PointRefusal = $"the cursor is not at ({x}, {y}) after moving it there (the point is off screen, or the mouse moved)";
+                return false;
+            }
+            IntPtr window = WindowFromPoint(cursor);
+            if (window == IntPtr.Zero || GetAncestor(window, GaRootOwner) != main)
+            {
+                PointRefusal = $"the window at ({x}, {y}) is not Revit's";
+                return false;
+            }
+            return true;
+        }
 
         internal bool FocusForPick()
         {
