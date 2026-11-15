@@ -13,14 +13,16 @@ namespace RevitMCPCommandSet.Commands.AddinTest
     /// <summary>
     /// <para>在打开的 Revit 里测试一个编译好的插件命令，不安装、不留改动。顺序（任务书 §4.3，硬要求）：
     /// 校验并编译读回片段；DLL 读成字节、算哈希、写进新的影子目录（原文件不被占用）；写输入文件；缩放（此后不动视图）；
-    /// 在 API 上下文里把全部点选换算成屏幕坐标、载入命令、投递加载器；等加载器报告已调用 Execute 后在本线程点选
+    /// 在 API 上下文里把全部点选换算成屏幕坐标、载入命令、投递加载器（Revit 丢掉投递时重投，最多投递四次）；
+    /// 等加载器报告已调用 Execute 后在本线程点选
     /// （丢了的最后一次点击最多重点到三次）；超时通过后台窗口命令取消对话框；加载器里读回、统计、还原；读结果文件。</para>
     /// <para>Tests a built add-in command in the open Revit without installing it and without keeping
     /// anything. Order (work plan section 4.3, required): check and compile the read-back; read the DLL
     /// as bytes, hash them and write them into a fresh shadow folder (the original file is never held
     /// open); write the input file; zoom (the view is not touched after this); in API context map every
-    /// pick to a screen pixel, load the command and post the loader; once the loader reports that it
-    /// called Execute, click the picks from this thread (a lost last click is repeated, three attempts at
+    /// pick to a screen pixel, load the command and post the loader (posted again when Revit drops it,
+    /// four posts at most); once the loader reports that it called Execute, click the picks from this
+    /// thread (a lost last click is repeated, three attempts at
     /// most); on a timeout cancel the identified dialog with a native window command; read back, count and restore in the loader;
     /// read the result file.</para>
     /// </summary>
@@ -31,6 +33,8 @@ namespace RevitMCPCommandSet.Commands.AddinTest
 
         private const int StepTimeoutMs = 30000;
         private const int LoaderStartMs = 20000;
+        private const int LoaderSliceMs = 4000;
+        private const int MaxLoaderPosts = 4;
         private const int LoaderFinishMs = 30000;
         private const int ClickDelayMs = 1500;
         private const int PickPauseMs = 1000;
@@ -149,11 +153,54 @@ namespace RevitMCPCommandSet.Commands.AddinTest
                 return;
             }
 
-            // 4. 等加载器调用被测命令。没开始就撤回：什么也没运行。
-            // 4. Wait for the loader to call the command. If it does not start, withdraw: nothing ran.
-            if (!session.Executing.WaitOne(LoaderStartMs) && session.CancelIfNotStarted())
+            // 4. 等加载器调用被测命令。Revit 在某些短暂的输入状态下会悄悄丢掉投递的命令：每等一段还没开始，
+            //    就回到 API 上下文重新投递（总时限不变，最多投递四次）。到时仍没开始就撤回：什么也没运行。
+            // 4. Wait for the loader to call the command. Revit silently drops a posted command in some
+            //    transient input states: after each slice without a start, post it again from API context
+            //    (same total budget, four posts at most). If it never starts, withdraw: nothing ran.
+            int posts = 1;
+            string lastRepost = null;
+            var startClock = System.Diagnostics.Stopwatch.StartNew();
+            while (!session.Executing.WaitOne(Math.Max(0, Math.Min(LoaderSliceMs, LoaderStartMs - (int)startClock.ElapsedMilliseconds))))
             {
-                reply.LoadError = $"The test loader did not start within {LoaderStartMs / 1000} s; nothing ran.";
+                int left = LoaderStartMs - (int)startClock.ElapsedMilliseconds;
+                if (left <= 0)
+                    break;
+                if (posts >= MaxLoaderPosts)
+                    continue;
+
+                // 重投这一步不超过剩余时限，也不超过一段（Revit 不空闲时外部事件会迟迟不执行；加载器此时开始的话，
+                // 这一步要等它结束才轮到）。超时或出错只记下，接着等。
+                // The re-post step waits no longer than the budget left, nor than one slice (the external
+                // event stalls while Revit is not idle, and waits for the loader to end if the loader starts
+                // now). A timeout or error is recorded and the wait goes on.
+                try
+                {
+                    switch ((RepostOutcome)CallApi(app => Repost(app, session), Math.Min(left, LoaderSliceMs)))
+                    {
+                        case RepostOutcome.Posted:
+                            posts++;
+                            lastRepost = null;
+                            break;
+                        case RepostOutcome.NotRegistered:
+                            lastRepost = "the last re-post was refused: the loader is no longer registered";
+                            break;
+                        case RepostOutcome.CannotPost:
+                            lastRepost = "the last re-post was refused: CanPostCommand returned false";
+                            break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    lastRepost = "the last re-post failed: " + Message(ex);
+                }
+            }
+            if (!session.Executing.WaitOne(0) && session.CancelIfNotStarted())
+            {
+                string posted = posts == 1
+                    ? "posted once; " + (lastRepost ?? "Revit accepted the post but never ran it")
+                    : $"posted {posts} times; " + (lastRepost ?? "Revit accepted each post but never ran it");
+                reply.LoadError = $"The test loader did not start within {LoaderStartMs / 1000} s ({posted}); nothing ran.";
                 return;
             }
             session.Executing.WaitOne();
@@ -347,10 +394,43 @@ namespace RevitMCPCommandSet.Commands.AddinTest
             session.Command = command;
             session.Restore = request.Restore;
             prepared.Dialogs = new DialogAutomation(app.MainWindowHandle, session.CommandReturned);
-            app.PostCommand(loader);
+
+            // 从这里起加载器的调用才认领本次测试。第一次投递就失败时撤回本次测试，免得还排着的旧投递在无人点选时运行它。
+            // From here on a loader invocation takes this test. If the first post fails the test is
+            // withdrawn, so an older post still queued cannot run it with nobody clicking the picks.
+            session.Arm();
+            try
+            {
+                app.PostCommand(loader);
+            }
+            catch
+            {
+                session.CancelIfNotStarted();
+                throw;
+            }
             prepared.Posted = true;
             prepared.MainWindow = app.MainWindowHandle;
             return prepared;
+        }
+
+        private enum RepostOutcome { Posted, NotWaiting, NotRegistered, CannotPost }
+
+        // 重新投递加载器（API 上下文，每次一个外部事件）：只在测试已就绪、加载器既未开始也未撤回时投递。
+        // PostCommand 的异常（例如上一次投递还在排队）交给调用方记下。
+        // Post the loader again (API context, one external event each time), only while the test is armed
+        // and the loader has neither started nor been withdrawn. An exception from PostCommand (for
+        // example while an earlier post is still queued) goes to the caller, which records it.
+        private static object Repost(UIApplication app, AddinTestSession session)
+        {
+            if (!session.AwaitingLoader)
+                return RepostOutcome.NotWaiting;
+            RevitCommandId loader = RevitCommandId.LookupCommandId(LoaderAddInId);
+            if (loader == null)
+                return RepostOutcome.NotRegistered;
+            if (!app.CanPostCommand(loader))
+                return RepostOutcome.CannotPost;
+            app.PostCommand(loader);
+            return RepostOutcome.Posted;
         }
 
         private void RestoreByUndo(AddinTestSession session, AddinTestResult reply)

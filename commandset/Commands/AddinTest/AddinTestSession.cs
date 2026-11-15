@@ -29,6 +29,7 @@ namespace RevitMCPCommandSet.Commands.AddinTest
         private static AddinTestSession _current;
 
         private readonly Dictionary<string, Assembly> _shadowAssemblies = new Dictionary<string, Assembly>(StringComparer.OrdinalIgnoreCase);
+        private bool _armed;
         private bool _loaderStarted;
         private bool _cancelled;
         private bool _callerDone;
@@ -78,6 +79,25 @@ namespace RevitMCPCommandSet.Commands.AddinTest
             get { lock (Gate) return _current != null; }
         }
 
+        /// <summary>
+        /// <para>（API 上下文）Command 与 Restore 设好之后、第一次投递加载器之前调用。此前的加载器调用（例如上一次测试
+        /// 迟到的重复投递）不认领本次测试。</para>
+        /// <para>(API context) Called after Command and Restore are set, right before the loader is posted
+        /// for the first time. A loader invocation before this (for example a late duplicate post from the
+        /// previous test) does not take this test.</para>
+        /// </summary>
+        public void Arm()
+        {
+            lock (Gate)
+                _armed = true;
+        }
+
+        /// <summary>True while the test is armed and the loader has neither started nor been withdrawn.</summary>
+        public bool AwaitingLoader
+        {
+            get { lock (Gate) return _armed && !_loaderStarted && !_cancelled; }
+        }
+
         /// <summary>True when the loader had not started and now never will.</summary>
         public bool CancelIfNotStarted()
         {
@@ -110,9 +130,12 @@ namespace RevitMCPCommandSet.Commands.AddinTest
         }
 
         /// <summary>
-        /// <para>加载器调用的入口：没有待运行的测试时什么也不做。总是返回 Succeeded 或 Cancelled（不让 Revit 弹失败框）。</para>
+        /// <para>加载器调用的入口：没有待运行的测试时什么也不做。总是返回 Succeeded 或 Cancelled（不让 Revit 弹失败框）。
+        /// 加载器可能被投递多次，多出来的调用（运行中、运行后、下一次测试就绪之前）都返回 Cancelled，不动会话。</para>
         /// <para>The loader's entry: does nothing when no test is waiting. Always returns Succeeded or
-        /// Cancelled (Revit shows no failure dialog).</para>
+        /// Cancelled (Revit shows no failure dialog). The loader may be posted more than once; an extra
+        /// invocation (while or after the loader ran, or before the next test is armed) returns Cancelled
+        /// and leaves the session alone.</para>
         /// </summary>
         internal static Result RunFromLoader(ExternalCommandData commandData, ElementSet elements)
         {
@@ -121,6 +144,10 @@ namespace RevitMCPCommandSet.Commands.AddinTest
             {
                 session = _current;
                 if (session == null || session._cancelled || session._loaderStarted)
+                    return Result.Cancelled;
+                // 还没就绪的测试（命令未设好、未投递）不认领，也不改它的状态。
+                // A test that is not armed yet (command not set, nothing posted) is not taken and not changed.
+                if (!session._armed)
                     return Result.Cancelled;
                 session._loaderStarted = true;
             }
