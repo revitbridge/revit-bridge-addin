@@ -55,12 +55,20 @@ namespace revit_mcp_plugin.Core
         // 代码执行类高危方法白名单（默认关闭，除非配置显式允许）
         // Code-execution class of high-risk methods (disabled by default unless config allows).
         // check_code_in_revit（只编译）与 get_bridge_capabilities（只读元数据）没有副作用，故意不在此列。
+        // dry_run_code_in_revit 虽然回滚模型改动，但同样在 Revit 里运行远程下发的代码，所以在列。
         // check_code_in_revit (compile only) and get_bridge_capabilities (read-only metadata)
-        // have no side effects and are deliberately not listed here.
+        // have no side effects and are deliberately not listed here. dry_run_code_in_revit
+        // rolls its model changes back but still runs remotely supplied code in Revit, so it is.
+        // test_addin_command_in_revit 载入并运行本机 DLL；capture_view_in_revit 往调用方给的路径写文件：同样在列。
+        // test_addin_command_in_revit loads and runs a local DLL and capture_view_in_revit writes a file
+        // to a caller-chosen path: listed too.
         private static readonly HashSet<string> CodeExecutionMethods = new HashSet<string>(StringComparer.Ordinal)
         {
             "send_code_to_revit",
             "manage_solidified_tools",
+            "dry_run_code_in_revit",
+            "test_addin_command_in_revit",
+            "capture_view_in_revit",
         };
 
         // 中继的关闭码（阶段 7 规格 §3）

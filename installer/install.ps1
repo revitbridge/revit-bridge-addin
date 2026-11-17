@@ -71,7 +71,9 @@
     Settings > Connection.
 
 .PARAMETER AllowRemoteCode
-    Remote mode: allow send_code_to_revit and manage_solidified_tools.
+    Remote mode: allow send_code_to_revit, dry_run_code_in_revit,
+    test_addin_command_in_revit, capture_view_in_revit and
+    manage_solidified_tools.
     Pairing with -Pair switches this on, because pairing is the act of
     authorising that server; each ad-hoc run still asks in Revit while
     confirmEachRun is on. Pass -AllowRemoteCode:$false together with -Pair to
@@ -442,10 +444,13 @@ param(
         } finally {
             $reader.Close()
         }
-        $addIn = $xml.RevitAddIns.AddIn
-        if ($null -eq $addIn) {
-            throw "$($manifest.Name) is not a Revit add-in manifest."
+        # The manifest also holds a Type="Command" entry (the add-in test loader); the
+        # add-in's identity, folder and DLL come from its single Type="Application" entry.
+        $applications = @($xml.SelectNodes("/RevitAddIns/AddIn[@Type='Application']"))
+        if ($applications.Count -ne 1) {
+            throw "$($manifest.Name) is not a revit-bridge manifest: expected exactly one AddIn of Type Application, found $($applications.Count)."
         }
+        $addIn = $applications[0]
         $assemblyRel = [string]$addIn.Assembly
         $folderName = Split-Path -Parent $assemblyRel
         if ([string]::IsNullOrWhiteSpace($folderName)) {

@@ -80,6 +80,10 @@ namespace RevitMCPCommandSet.Commands.Bridge
                 ["features"] = new JObject
                 {
                     ["check_code"] = methods.Contains("check_code_in_revit"),
+                    ["check_code_sources"] = methods.Contains("check_code_in_revit"),
+                    ["dry_run"] = methods.Contains("dry_run_code_in_revit"),
+                    ["dry_run_sources"] = methods.Contains("dry_run_code_in_revit"),
+                    ["addin_test"] = methods.Contains("test_addin_command_in_revit"),
                     ["structured_diagnostics"] = true,
                     ["kit"] = false,
                 },

@@ -44,5 +44,13 @@ namespace RevitMCPCommandSet.Utils
         // Before Revit 2024 ElementId(Int32) is the only numeric constructor.
         public static ElementId FromInt(int value) => new ElementId(value);
 #endif
+
+#if REVIT2024_OR_GREATER
+        // ElementId(Int64), new in Revit 2024.
+        public static ElementId FromLong(long value) => new ElementId(value);
+#else
+        // Before Revit 2024 ids are Int32; a larger value cannot name an element there.
+        public static ElementId FromLong(long value) => new ElementId(checked((int)value));
+#endif
     }
 }

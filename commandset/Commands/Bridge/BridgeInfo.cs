@@ -12,8 +12,11 @@ namespace RevitMCPCommandSet.Commands.Bridge
     public static class BridgeInfo
     {
         /// <summary>
-        /// <para>协议版本：2 = 有 get_bridge_capabilities 与 check_code_in_revit。</para>
-        /// <para>Protocol version: 2 = get_bridge_capabilities and check_code_in_revit exist.</para>
+        /// <para>协议版本：2 = 有 get_bridge_capabilities 与 check_code_in_revit。之后只增不改的方法
+        /// （如 dry_run_code_in_revit）不升版本，由 features 与 methods 报告。</para>
+        /// <para>Protocol version: 2 = get_bridge_capabilities and check_code_in_revit exist. Methods
+        /// added later without changing existing ones (such as dry_run_code_in_revit) keep the
+        /// version; features and methods report them.</para>
         /// </summary>
         public const int ProtocolVersion = 2;
 

@@ -71,7 +71,7 @@ namespace revit_mcp_plugin.Configuration
 
         /// <summary>
         /// <para>是否允许远程下发的代码执行类高危方法（send_code_to_revit /
-        /// manage_solidified_tools run 等）。默认关闭。</para>
+        /// dry_run_code_in_revit / manage_solidified_tools run 等）。默认关闭。</para>
         /// <para>Whether remote code-execution methods are allowed. Default off.</para>
         /// </summary>
         [JsonProperty("allowRemoteCodeExecution")]
