@@ -2,7 +2,7 @@
 
 Revit add-in for [revit-bridge](https://github.com/revitbridge/revit-bridge). It exposes a small JSON-RPC surface (30 commands, including dynamic C# execution) that the `revit-bridge` MCP server or a [revit-bridge-web](https://github.com/revitbridge/revit-bridge-web) host drives.
 
-Revit 2020銆?021銆?023-2026 鎻掍欢锛氭湰鍦?TCP 鎴栬繙绋?WebSocket 涓ょ妯″紡锛屼緵 `revit-bridge` MCP 鏈嶅姟鍣ㄦ垨婕旂ず瀹夸富璋冪敤銆傛瘡涓?Revit 骞翠唤鍗曠嫭瀹夎銆佸崟鐙厤缃€佸崟鐙厤瀵广€?
+Revit 2020、2021、2023-2026 插件：本地 TCP 或远程 WebSocket 两种模式，供 `revit-bridge` MCP 服务器或演示宿主调用。每个 Revit 年份单独安装、单独配置、单独配对。
 
 Fork of [mcp-servers-for-revit](https://github.com/mcp-servers-for-revit/mcp-servers-for-revit) (MIT). Only `plugin/` and `commandset/` were kept; see [NOTICE](NOTICE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
@@ -103,7 +103,7 @@ Two read-only methods let a client find out what it can rely on before anything 
 
 On a timeout, the test closes a uniquely identified modal window created during that command through a bounded native `WM_CLOSE` call, then waits for the command and model restoration. It does not confirm dialogs automatically, send Escape as a timeout fallback, or use screenshots as evidence of completion. Existing or ambiguous windows are left alone and the reply reports that restoration is unconfirmed. Element picks pause while a dialog blocks the main window; pick activation uses native window calls, without keyboard or title-bar click fallbacks. An explicit Escape in `picks` still cancels an element pick when the guarded main window is active. A command that shows a modeless window while it waits for a pick is not supported: no pick is sent while a new window of the command is open. On a timeout the command's dialog is closed with `WM_CLOSE`, which an OK-only message box reports to the command as OK; the model is restored either way.
 
-A snippet that compiles but throws while it runs answers `success: false` with `errorMessage` `鎵ц澶辫触: <full exception type name>: <message>`, for example `鎵ц澶辫触: Autodesk.Revit.Exceptions.ArgumentException: ...` where older builds said `ArgumentException: ...`. The reflection wrapper (`TargetInvocationException`) and an `AggregateException` holding one exception are unwrapped to the exception the code threw; inner exceptions follow as ` ---> <type>: <message>`. Compile errors keep their `Line N: ...` text and come with `diagnostics`. `manage_solidified_tools` `run` reports the same way.
+A snippet that compiles but throws while it runs answers `success: false` with `errorMessage` `执行失败: <full exception type name>: <message>`, for example `执行失败: Autodesk.Revit.Exceptions.ArgumentException: ...` where older builds said `ArgumentException: ...`. The reflection wrapper (`TargetInvocationException`) and an `AggregateException` holding one exception are unwrapped to the exception the code threw; inner exceptions follow as ` ---> <type>: <message>`. Compile errors keep their `Line N: ...` text and come with `diagnostics`. `manage_solidified_tools` `run` reports the same way.
 
 In remote mode, `send_code_to_revit`, `dry_run_code_in_revit`, `test_addin_command_in_revit`, `capture_view_in_revit` and `manage_solidified_tools` are rejected unless `allowRemoteCodeExecution` is `true`. Pairing switches it on and unpairing (or the server revoking the device) switches it off, so it follows the trust you granted rather than being a separate step. Local mode is not gated by this flag; the local MCP server's own confirmation step (`spec_confirmed`) applies instead.
 
