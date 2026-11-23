@@ -1,4 +1,5 @@
 ﻿using System;
+using Autodesk.Revit.DB.Events;
 using Autodesk.Revit.UI;
 using System.Reflection;
 
@@ -35,11 +36,39 @@ namespace revit_mcp_plugin.Core
                     $"初始化开关状态失败 / Failed to initialise the bridge switch: {ex}");
             }
 
+            application.ControlledApplication.ApplicationInitialized += OnApplicationInitialized;
+
             return Result.Succeeded;
+        }
+
+        // "Turn the bridge on when Revit starts". Runs once, in an API context, after Revit
+        // has finished starting; the sender is the Revit Application.
+        private static void OnApplicationInitialized(object sender, ApplicationInitializedEventArgs e)
+        {
+            try
+            {
+                if (sender is Autodesk.Revit.ApplicationServices.Application app)
+                    BridgeController.AutoStart(new UIApplication(app));
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Trace.WriteLine(
+                    $"自动开启失败 / Auto start failed: {ex}");
+            }
         }
 
         public Result OnShutdown(UIControlledApplication application)
         {
+            try
+            {
+                application.ControlledApplication.ApplicationInitialized -= OnApplicationInitialized;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Trace.WriteLine(
+                    $"取消订阅失败 / Failed to unsubscribe ApplicationInitialized: {ex.Message}");
+            }
+
             try
             {
                 if (SocketService.Instance.IsRunning)

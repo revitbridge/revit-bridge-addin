@@ -26,6 +26,9 @@
             <TextBlock Foreground="#666666" TextWrapping="Wrap" Margin="20,2,0,10"
                        Text="Lets your own command sets (other folders under Commands) and solidified tools plug in. You can leave it off when you only use the cloud MCP. While it is off, requests for them are refused."/>
 
+            <!-- Auto start -->
+            <CheckBox x:Name="AutoStartCheckBox" Content="Turn the bridge on when Revit starts"
+                      Checked="AutoStartCheckBox_Changed" Unchecked="AutoStartCheckBox_Changed"/>
             <TextBlock x:Name="SettingsMessageText" TextWrapping="Wrap" Margin="0,8,0,0"
                        Foreground="#666666" Visibility="Collapsed"/>
 

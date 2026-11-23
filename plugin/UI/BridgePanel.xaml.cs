@@ -9,10 +9,10 @@ namespace revit_mcp_plugin.UI
 {
     /// <summary>
     /// <para>Revit Bridge 面板（非模态，归属 Revit 主窗口，同一时间只开一个）：开关与实时状态、
-    /// "允许接入我的工具"、连接（本机 / 云端、配对、端口）、命令列表。
+    /// "允许接入我的工具"、"启动 Revit 时自动开启"、连接（本机 / 云端、配对、端口）、命令列表。
     /// 在 Revit UI 线程上运行，但不在 API 上下文中：开关经 BridgeController.Post 交给外部事件。</para>
     /// <para>The Revit Bridge panel (modeless, owned by Revit's main window, one at a time):
-    /// switch and live status, "Allow my tools",
+    /// switch and live status, "Allow my tools", "Turn the bridge on when Revit starts",
     /// connection (local / remote, pairing, port) and the command list. It runs on the Revit
     /// UI thread but outside an API context, so the switch goes through BridgeController.Post.</para>
     /// </summary>
@@ -72,8 +72,9 @@ namespace revit_mcp_plugin.UI
                 string error;
                 ServiceSettings settings = SettingsStore.LoadOrDefaults(out error).Settings;
                 MyToolsCheckBox.IsChecked = settings.LocalToolsEnabled;
+                AutoStartCheckBox.IsChecked = settings.AutoStart;
                 if (error != null)
-                    ShowSettingsMessage(error + ". The defaults are shown (local, Allow my tools off). " +
+                    ShowSettingsMessage(error + ". The defaults are shown (local, Allow my tools off, no auto start). " +
                                         "Repair the file or re-run the installer; until then changes here cannot be saved.",
                                         isError: true);
             }
@@ -132,6 +133,26 @@ namespace revit_mcp_plugin.UI
             {
                 SetQuietly(() => MyToolsCheckBox.IsChecked = !allowed);
                 ShowSettingsMessage("Could not save 'Allow my tools': " + ex.Message, isError: true);
+            }
+        }
+
+        private void AutoStartCheckBox_Changed(object sender, RoutedEventArgs e)
+        {
+            if (_loading) return;
+            bool autoStart = AutoStartCheckBox.IsChecked == true;
+            try
+            {
+                SettingsStore.UpdateSettings(s => s.AutoStart = autoStart);
+                BridgeController.SettingsChanged();
+                ShowSettingsMessage(autoStart
+                    ? "The bridge will turn on when Revit starts."
+                    : "The bridge stays off when Revit starts until you turn it on.",
+                    isError: false);
+            }
+            catch (Exception ex)
+            {
+                SetQuietly(() => AutoStartCheckBox.IsChecked = !autoStart);
+                ShowSettingsMessage("Could not save 'Turn the bridge on when Revit starts': " + ex.Message, isError: true);
             }
         }
 

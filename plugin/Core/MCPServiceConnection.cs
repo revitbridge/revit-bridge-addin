@@ -67,6 +67,8 @@ namespace revit_mcp_plugin.Core
         Ribbon,
         /// <summary>The panel's switch. Everything is reported in the panel's status line.</summary>
         Panel,
+        /// <summary>"Turn the bridge on when Revit starts". No modal dialog; a failure opens the panel.</summary>
+        AutoStart,
     }
 
     /// <summary>Work the panel and the WebSocket thread hand to the Revit UI thread.</summary>
@@ -278,6 +280,8 @@ namespace revit_mcp_plugin.Core
                 _lastError = problem.Replace("\n", " ");
                 if (origin == BridgeOrigin.Ribbon)
                     TaskDialog.Show("revitMCP", problem);
+                else if (origin == BridgeOrigin.AutoStart)
+                    ShowPanel(uiApp, fallbackDialog: false, _lastError);
                 return false;
             }
 
@@ -306,6 +310,25 @@ namespace revit_mcp_plugin.Core
                 System.Diagnostics.Trace.WriteLine($"revit-bridge: could not open the panel: {ex}");
                 if (fallbackDialog)
                     TaskDialog.Show("revitMCP", reason);
+            }
+        }
+
+        /// <summary>"Turn the bridge on when Revit starts": called once from ApplicationInitialized.</summary>
+        public static void AutoStart(UIApplication uiApp)
+        {
+            ServiceSettings settings = ReloadSettingsSnapshot();
+            if (!settings.AutoStart || IsOn)
+                return;
+            try
+            {
+                TurnOn(uiApp, BridgeOrigin.AutoStart);
+            }
+            catch (Exception ex)
+            {
+                _lastError = "Could not turn the bridge on at start-up: " + ex.Message;
+                System.Diagnostics.Trace.WriteLine($"revit-bridge: auto start failed: {ex}");
+                RefreshRibbon();
+                ShowPanel(uiApp, fallbackDialog: false, _lastError);
             }
         }
 
