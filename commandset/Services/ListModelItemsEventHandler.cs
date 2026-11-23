@@ -111,12 +111,19 @@ namespace RevitMCPCommandSet.Services
             }
             finally
             {
+                // 结果、清运行标志与发信号在同一把锁里：TryQueue 也在这把锁里 Reset，所以它要么在这之前
+                // （此时还在运行，排不进来），要么在这之后（把这次的信号清掉，等自己的结果）。否则锁外的
+                // 迟到的 Set 会叫醒一个刚排进来的调用，它拿到空结果，而它的请求之后无人等待地运行。
+                // Result, running flag and signal under one lock: TryQueue resets the event under the
+                // same lock, so it comes either before (still running, so it cannot queue) or after
+                // (and clears this signal, then waits for its own result). A Set outside the lock could
+                // wake a call queued in between with no result, its request then running for nobody.
                 lock (_sync)
                 {
                     _result = result;
                     _running = false;
+                    _done.Set();
                 }
-                _done.Set();
             }
         }
 
