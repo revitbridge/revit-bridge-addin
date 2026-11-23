@@ -31,58 +31,19 @@ namespace RevitMCPCommandSet.Services
             {
                 var doc = app.ActiveUIDocument.Document;
 
-                // 可载入族
-                var familySymbols = new FilteredElementCollector(doc)
-                    .OfClass(typeof(FamilySymbol))
-                    .Cast<FamilySymbol>();
-                // 系统族类型（墙、楼板等）
-                var systemTypes = new List<ElementType>();
-                systemTypes.AddRange(new FilteredElementCollector(doc).OfClass(typeof(WallType)).Cast<ElementType>());
-                systemTypes.AddRange(new FilteredElementCollector(doc).OfClass(typeof(FloorType)).Cast<ElementType>());
-                systemTypes.AddRange(new FilteredElementCollector(doc).OfClass(typeof(RoofType)).Cast<ElementType>());
-                systemTypes.AddRange(new FilteredElementCollector(doc).OfClass(typeof(CeilingType)).Cast<ElementType>());
-                systemTypes.AddRange(new FilteredElementCollector(doc).OfClass(typeof(CurtainSystemType)).Cast<ElementType>());
-                // 合并结果
-                var allElements = familySymbols
-                    .Cast<ElementType>()
-                    .Concat(systemTypes)
-                    .ToList();
-
-                IEnumerable<ElementType> filteredElements = allElements;
-
-                // 类别过滤
-                if (CategoryList != null && CategoryList.Any())
-                {
-                    var validCategoryIds = new List<int>();
-                    foreach (var categoryName in CategoryList)
-                    {
-                        if (Enum.TryParse(categoryName, out BuiltInCategory bic))
-                        {
-                            validCategoryIds.Add((int)bic);
-                        }
-                    }
-
-                    if (validCategoryIds.Any())
-                    {
-                        filteredElements = filteredElements.Where(et =>
-                        {
-#if REVIT2024_OR_GREATER
-                            var categoryId = et.Category?.Id.Value;
-#else
-                            var categoryId = et.Category?.Id.IntegerValue;
-#endif
-                            return categoryId != null && validCategoryIds.Contains((int)categoryId.Value);
-                        });
-                    }
-                }
+                // 收集与类别过滤（FamilyTypeCollector）。读不出类别的元素类型算作不属于所求类别，跳过；
+                // 这个回复（FamilyTypeInfo 数组）没有放警告的地方。
+                // An element type whose category cannot be read counts as not in the requested
+                // categories and is skipped; this reply (a FamilyTypeInfo array) has no place for warnings.
+                List<int> validCategoryIds = FamilyTypeCollector.ParseCategoryIds(CategoryList);
+                IEnumerable<ElementType> filteredElements = FamilyTypeCollector.Collect(doc, validCategoryIds);
 
                 // 名称模糊匹配（同时匹配族名和类型名）
                 if (!string.IsNullOrEmpty(FamilyNameFilter))
                 {
                     filteredElements = filteredElements.Where(et =>
                     {
-                        string familyName = et is FamilySymbol fs ? fs.FamilyName : et.get_Parameter(
-                            BuiltInParameter.SYMBOL_FAMILY_NAME_PARAM)?.AsString() ?? "";
+                        string familyName = FamilyTypeCollector.FilterFamilyName(et);
 
                         return familyName?.IndexOf(FamilyNameFilter, StringComparison.OrdinalIgnoreCase) >= 0 ||
                                et.Name.IndexOf(FamilyNameFilter, StringComparison.OrdinalIgnoreCase) >= 0;
@@ -96,31 +57,7 @@ namespace RevitMCPCommandSet.Services
                 }
 
                 // 转换为FamilyTypeInfo列表
-                ResultFamilyTypes = filteredElements.Select(et =>
-                {
-                    string familyName;
-                    if (et is FamilySymbol fs)
-                    {
-                        familyName = fs.FamilyName;
-                    }
-                    else
-                    {
-                        Parameter param = et.get_Parameter(BuiltInParameter.SYMBOL_FAMILY_NAME_PARAM);
-                        familyName = param?.AsString() ?? et.GetType().Name.Replace("Type", "");
-                    }
-                    return new FamilyTypeInfo
-                    {
-#if REVIT2024_OR_GREATER
-                        FamilyTypeId = et.Id.Value,
-#else
-                        FamilyTypeId = et.Id.IntegerValue,
-#endif
-                        UniqueId = et.UniqueId,
-                        FamilyName = familyName,
-                        TypeName = et.Name,
-                        Category = et.Category?.Name
-                    };
-                }).ToList();
+                ResultFamilyTypes = filteredElements.Select(FamilyTypeCollector.ToInfo).ToList();
             }
             catch (Exception ex)
             {

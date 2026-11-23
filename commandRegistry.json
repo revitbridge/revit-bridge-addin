@@ -27,6 +27,19 @@
       }
     },
     {
+      "commandName": "list_model_items",
+      "assemblyPath": "RevitMCPCommandSet/{VERSION}/RevitMCPCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [],
+      "description": "List levels, Revit link instances, the family types of a category, or the categories that have types; read-only",
+      "developer": {
+        "name": "revitbridge",
+        "email": "",
+        "website": "",
+        "organization": "revitbridge"
+      }
+    },
+    {
       "commandName": "get_current_view_elements",
       "assemblyPath": "RevitMCPCommandSet/{VERSION}/RevitMCPCommandSet.dll",
       "enabled": true,

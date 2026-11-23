@@ -19,6 +19,11 @@
       "assemblyPath": "RevitMCPCommandSet.dll"
     },
     {
+      "commandName": "list_model_items",
+      "description": "List levels, Revit link instances, the family types of a category, or the categories that have types; read-only",
+      "assemblyPath": "RevitMCPCommandSet.dll"
+    },
+    {
       "commandName": "get_current_view_elements",
       "description": "get current view elements",
       "assemblyPath": "RevitMCPCommandSet.dll"
