@@ -80,7 +80,7 @@ namespace RevitMCPCommandSet.Services
             return listed.Concat(others);
         }
 
-        private static bool IsInCategories(ElementType et, List<int> categoryIds)
+        internal static bool IsInCategories(ElementType et, List<int> categoryIds)
         {
             // ElementId.Value (Int64) is new in Revit 2024; before it, ElementId.IntegerValue.
 #if REVIT2024_OR_GREATER

@@ -8,16 +8,16 @@ using RevitMCPSDK.API.Base;
 namespace RevitMCPCommandSet.Commands.Access
 {
     /// <summary>
-    /// <para>list_model_items：列出标高、链接实例、某类别的族类型或有类型的类别，供宿主做选择。
-    /// 参数 {kind, category?, link_id?, q?, limit?}，kind 取 levels | links | types | type_categories。
+    /// <para>list_model_items：列出标高、链接实例、某类别（或按 id）的族类型、有类型的类别，供宿主做选择与按 id 核对。
+    /// 参数 {kind, category?, link_id?, ids?, q?, limit?}，kind 取 levels | links | types | type_categories。
     /// 只读，不开事务，不弹框。参数错误、类别不对、link_id 不存在等都以 Success=false 与 Error 返回，
     /// 不抛异常。参数在 Socket 线程上检查，通过后才进 Revit。</para>
-    /// <para>list_model_items: lists levels, link instances, the family types of a category, or
-    /// the categories that have types, for a host to choose from. Parameters {kind, category?,
-    /// link_id?, q?, limit?}, kind one of levels | links | types | type_categories. Read-only:
-    /// no transaction, no dialog. A bad parameter, a bad category or an unknown link_id comes
-    /// back as Success=false with Error, not as an exception. Parameters are checked on the
-    /// socket thread before anything reaches Revit.</para>
+    /// <para>list_model_items: lists levels, link instances, the family types of a category (or
+    /// by id), or the categories that have types, for a host to choose from and to check ids
+    /// against. Parameters {kind, category?, link_id?, ids?, q?, limit?}, kind one of levels |
+    /// links | types | type_categories. Read-only: no transaction, no dialog. A bad parameter, a
+    /// bad category or an unknown link_id comes back as Success=false with Error, not as an
+    /// exception. Parameters are checked on the socket thread before anything reaches Revit.</para>
     /// </summary>
     public class ListModelItemsCommand : ExternalEventCommandBase
     {
@@ -88,6 +88,9 @@ namespace RevitMCPCommandSet.Commands.Access
         public const string Types = "types";
         public const string TypeCategories = "type_categories";
 
+        /// <summary>At most this many entries in ids.</summary>
+        public const int MaxIds = 200;
+
         // 与包里 query 的类别检查相同的写法；Enum.TryParse 另外接受数字与逗号组合，这里先挡掉。
         // The same shape the package's query checks; Enum.TryParse would also take numbers and
         // comma lists, which this rules out first.
@@ -95,7 +98,7 @@ namespace RevitMCPCommandSet.Commands.Access
 
         public string Kind { get; private set; }
 
-        /// <summary>The BuiltInCategory name (types only); null for every type the old list has.</summary>
+        /// <summary>The BuiltInCategory name (types only); null when not given.</summary>
         public string Category { get; private set; }
 
         /// <summary>(int)BuiltInCategory of Category; null when Category is null.</summary>
@@ -103,6 +106,21 @@ namespace RevitMCPCommandSet.Commands.Access
 
         /// <summary>Id of a RevitLinkInstance whose document is read instead of the open one.</summary>
         public long? LinkId { get; private set; }
+
+        /// <summary>
+        /// <para>ids 去重后按给出的顺序（levels、links、types 用；types 的行按这个顺序）；null 表示没给。</para>
+        /// <para>ids without duplicates, in the order given (used by levels, links and types; the
+        /// order of the types rows); null when not given.</para>
+        /// </summary>
+        public IReadOnlyList<long> Ids { get; private set; }
+
+        private HashSet<long> _idSet;
+
+        /// <summary>True when ids was not given or holds this element id.</summary>
+        public bool IncludesId(long id)
+        {
+            return _idSet == null || _idSet.Contains(id);
+        }
 
         /// <summary>Trimmed q; null when missing or blank.</summary>
         public string Query { get; private set; }
@@ -171,6 +189,52 @@ namespace RevitMCPCommandSet.Commands.Access
                     return null;
                 }
                 request.LinkId = linkId;
+            }
+
+            JToken idsToken = parameters["ids"];
+            if (!IsAbsent(idsToken))
+            {
+                if (kind == TypeCategories)
+                {
+                    error = ModelItemsResult.Fail(kind, ModelItemsErrorCodes.BadParams,
+                        "ids is not used with kind type_categories.");
+                    return null;
+                }
+
+                var order = new List<long>();
+                var set = new HashSet<long>();
+                bool valid = idsToken is JArray array && array.Count <= MaxIds;
+                if (valid)
+                {
+                    foreach (JToken item in (JArray)idsToken)
+                    {
+                        if (!TryGetInt64(item, out long id))
+                        {
+                            valid = false;
+                            break;
+                        }
+                        if (set.Add(id))
+                            order.Add(id);
+                    }
+                }
+                if (!valid)
+                {
+                    error = ModelItemsResult.Fail(kind, ModelItemsErrorCodes.BadParams,
+                        $"ids must be an array of at most {MaxIds} integer element ids.");
+                    return null;
+                }
+                request.Ids = order;
+                request._idSet = set;
+            }
+
+            // types 必须带 category 或 ids；不带类别的旧列表只留在 get_available_family_types。
+            // types needs category or ids; the old list without a category stays in
+            // get_available_family_types only.
+            if (kind == Types && request.CategoryId == null && request.Ids == null)
+            {
+                error = ModelItemsResult.Fail(kind, ModelItemsErrorCodes.BadParams,
+                    "kind types needs category or ids.");
+                return null;
             }
 
             JToken queryToken = parameters["q"];

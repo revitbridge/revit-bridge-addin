@@ -165,6 +165,12 @@ namespace RevitMCPCommandSet.Services
                     ReadLinks(host, rows);
                     break;
                 case ModelItemsRequest.Types:
+                    // Parse already refuses this; the old no-category list must not come back here.
+                    if (request.CategoryId == null && request.Ids == null)
+                    {
+                        return ModelItemsResult.Fail(request.Kind, ModelItemsErrorCodes.BadParams,
+                            "kind types needs category or ids.");
+                    }
                     ReadTypes(source, request, rows);
                     break;
                 case ModelItemsRequest.TypeCategories:
@@ -218,6 +224,11 @@ namespace RevitMCPCommandSet.Services
             var read = new List<KeyValuePair<double, ModelLevelItem>>();
             foreach (Level level in new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>())
             {
+                // ids：不在其中的标高不读、不记警告。
+                // ids: a level not in it is neither read nor warned about.
+                if (!rows.Wants(level.Id.GetValue()))
+                    continue;
+
                 try
                 {
                     double elevation = level.Elevation;
@@ -244,6 +255,9 @@ namespace RevitMCPCommandSet.Services
         {
             foreach (RevitLinkInstance link in new FilteredElementCollector(host).OfClass(typeof(RevitLinkInstance)).Cast<RevitLinkInstance>())
             {
+                if (!rows.Wants(link.Id.GetValue()))
+                    continue;
+
                 ModelLinkItem item;
                 try
                 {
@@ -283,31 +297,100 @@ namespace RevitMCPCommandSet.Services
             }
         }
 
-        // 与 get_available_family_types 同一份列表（FamilyTypeCollector）：给了类别时是该类别的全部元素类型，
-        // 没给时是以前那六个类的类型。
-        // The same list as get_available_family_types (FamilyTypeCollector): every element type
-        // of the category when one is given, the types of the old six classes when not.
+        // 只给 category：与 get_available_family_types 同一份列表（FamilyTypeCollector），即该类别的全部元素类型。
+        // 给了 ids：按 ids 的顺序逐个取文档里的元素，是 ElementType 的才算，不限类别；同时给了 category 时
+        // 只留该类别的。找不到或不是类型的 id 不报错、不记警告，只是不在 Items 里。
+        // category only: the same list as get_available_family_types (FamilyTypeCollector), every
+        // element type of the category. ids given: each id looked up in the document in the order
+        // of ids; only an ElementType counts, of any category, or of category when that is given
+        // too. An id that is missing or not a type is no error and no warning, just absent.
         private static void ReadTypes(Document doc, ModelItemsRequest request, RowSet rows)
         {
             var categoryIds = new List<int>();
             if (request.CategoryId.HasValue)
                 categoryIds.Add(request.CategoryId.Value);
 
-            foreach (ElementType type in FamilyTypeCollector.Collect(doc, categoryIds))
+            if (request.Ids == null)
             {
-                FamilyTypeInfo info;
+                foreach (ElementType type in FamilyTypeCollector.Collect(doc, categoryIds))
+                    AddType(type, rows);
+                return;
+            }
+
+            foreach (long id in request.Ids)
+            {
+                ElementType type;
                 try
                 {
-                    info = FamilyTypeCollector.ToInfo(type);
+                    type = FindType(doc, id);
+                    if (type == null)
+                        continue;
+                    if (categoryIds.Count > 0 && !FamilyTypeCollector.IsInCategories(type, categoryIds))
+                        continue;
                 }
                 catch (Exception ex)
                 {
-                    rows.Skipped("type", type, ex);
+                    rows.Warn($"type {id} skipped: {Describe(ex)}");
                     continue;
                 }
 
-                rows.Add(info, info.FamilyName, info.TypeName);
+                AddType(type, rows);
             }
+        }
+
+        private static ElementType FindType(Document doc, long id)
+        {
+            ElementId elementId;
+            try
+            {
+                elementId = ElementIdCompat.FromLong(id);
+            }
+            catch (OverflowException)
+            {
+                // Before Revit 2024 an id is Int32; a larger value names no element, so the id is absent.
+                return null;
+            }
+            return doc.GetElement(elementId) as ElementType;
+        }
+
+        // 一行 ModelTypeItem：FamilyTypeInfo 的字段（转换失败丢这一行），加 BuiltInCategory（读不出为 null 并记一行）。
+        // One ModelTypeItem row: the FamilyTypeInfo fields (a failed conversion drops the row), plus
+        // BuiltInCategory (null and a warning line when the category cannot be read).
+        private static void AddType(ElementType type, RowSet rows)
+        {
+            FamilyTypeInfo info;
+            try
+            {
+                info = FamilyTypeCollector.ToInfo(type);
+            }
+            catch (Exception ex)
+            {
+                rows.Skipped("type", type, ex);
+                return;
+            }
+
+            string builtInCategory = null;
+            try
+            {
+                Category category = type.Category;
+                if (category != null && TryGetBuiltInCategoryName(category.Id.GetValue(), out string name))
+                    builtInCategory = name;
+            }
+            catch (Exception ex)
+            {
+                rows.Warn($"type {info.FamilyTypeId}: category not read, BuiltInCategory left null: {Describe(ex)}");
+            }
+
+            var item = new ModelTypeItem
+            {
+                FamilyTypeId = info.FamilyTypeId,
+                UniqueId = info.UniqueId,
+                FamilyName = info.FamilyName,
+                TypeName = info.TypeName,
+                Category = info.Category,
+                BuiltInCategory = builtInCategory,
+            };
+            rows.Add(item, item.FamilyName, item.TypeName);
         }
 
         // 全部元素类型按类别计数（与 kind types 给该类别时的行数相同）；按 DisplayName 排序。
@@ -406,6 +489,12 @@ namespace RevitMCPCommandSet.Services
             public RowSet(ModelItemsRequest request)
             {
                 _request = request;
+            }
+
+            /// <summary>True when ids was not given or holds this element id.</summary>
+            public bool Wants(long id)
+            {
+                return _request.IncludesId(id);
             }
 
             public void Add(object row, params string[] names)

@@ -17,7 +17,7 @@ namespace RevitMCPCommandSet.Models.Common
         public string Kind { get; set; }
 
         /// <summary>
-        /// Rows: ModelLevelItem (levels), ModelLinkItem (links), FamilyTypeInfo (types),
+        /// Rows: ModelLevelItem (levels), ModelLinkItem (links), ModelTypeItem (types),
         /// TypeCategoryItem (type_categories).
         /// </summary>
         public List<object> Items { get; set; } = new List<object>();
@@ -96,6 +96,24 @@ namespace RevitMCPCommandSet.Models.Common
         public string DocumentTitle { get; set; }
         public PointMm Origin { get; set; }
         public bool Rotated { get; set; }
+    }
+
+    /// <summary>
+    /// <para>一个族类型：get_available_family_types 的行（FamilyTypeInfo 的五个字段，Category 是类别显示名），
+    /// 另加 BuiltInCategory（类别的 OST_* 名；不是内置类别或读不出时为 null）。按类别判断用 BuiltInCategory。</para>
+    /// <para>One family type: the get_available_family_types row (the five FamilyTypeInfo fields,
+    /// Category being the category's display name) plus BuiltInCategory (the OST_* name of the
+    /// category; null when it is not a built-in category or cannot be read). Decide by
+    /// BuiltInCategory, not by Category.</para>
+    /// </summary>
+    public class ModelTypeItem
+    {
+        public long FamilyTypeId { get; set; }
+        public string UniqueId { get; set; }
+        public string FamilyName { get; set; }
+        public string TypeName { get; set; }
+        public string Category { get; set; }
+        public string BuiltInCategory { get; set; }
     }
 
     /// <summary>A point in millimetres.</summary>
