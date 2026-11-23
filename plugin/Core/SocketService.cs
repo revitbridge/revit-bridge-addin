@@ -1,5 +1,6 @@
 ﻿using System;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -27,6 +28,8 @@ namespace revit_mcp_plugin.Core
         // reads the reference once, so it never sees a half-filled registry.
         private volatile ICommandRegistry _commandRegistry;
         private ILogger _logger;
+        private volatile string _lastStartError;
+        private volatile string _configLoadError;
         private CommandExecutor _commandExecutor;
         private string _authToken;
         private bool _tokenWarningLogged;
@@ -56,6 +59,18 @@ namespace revit_mcp_plugin.Core
             set => _port = value;
         }
 
+        /// <summary>
+        /// <para>上一次 Start 失败的原因（含端口）；成功启动后为 null。</para>
+        /// <para>Why the last Start failed, naming the port; null after a successful start.</para>
+        /// </summary>
+        public string LastStartError => _lastStartError;
+
+        /// <summary>Why commandRegistry.json was not read at the last load, or null.</summary>
+        public string ConfigLoadError => _configLoadError;
+
+        /// <summary>Number of methods the current registry answers.</summary>
+        public int RegisteredMethodCount => CountMethods(_commandRegistry);
+
         // 初始化
         // Initialization.
         public void Initialize(UIApplication uiApp)
@@ -76,6 +91,7 @@ namespace revit_mcp_plugin.Core
             // Load configuration and register commands.
             ConfigurationManager configManager = new ConfigurationManager(_logger);
             configManager.LoadConfiguration();
+            _configLoadError = configManager.LoadError;
 
             // 读取预共享鉴权 token（可选增强，缺失时向后兼容放行）
             // Read the pre-shared auth token (optional; missing token stays backward compatible).
@@ -116,6 +132,7 @@ namespace revit_mcp_plugin.Core
 
             ConfigurationManager configManager = new ConfigurationManager(_logger);
             configManager.LoadConfiguration();
+            _configLoadError = configManager.LoadError;
             LoadCommandRegistry(configManager);
             _logger.Info("Socket service commands reloaded");
         }
@@ -133,12 +150,19 @@ namespace revit_mcp_plugin.Core
             _commandExecutor = new CommandExecutor(registry, _logger);
         }
 
+        // A published registry is never changed again, so counting it from the UI thread is safe.
+        internal static int CountMethods(ICommandRegistry registry)
+        {
+            return (registry as RevitCommandRegistry)?.GetRegisteredCommands().Count() ?? 0;
+        }
+
         public void Start()
         {
             if (_isRunning) return;
 
             try
             {
+                _lastStartError = null;
                 _isRunning = true;
                 // 仅监听本地回环地址，避免同网段主机直连未鉴权端口
                 // Bind to loopback only so other hosts on the LAN cannot reach the port.
@@ -154,8 +178,40 @@ namespace revit_mcp_plugin.Core
             catch (Exception ex)
             {
                 _isRunning = false;
+                try
+                {
+                    _listener?.Stop();
+                }
+                catch (SocketException stopEx)
+                {
+                    _logger.Debug("Socket 监听器清理失败 / Could not clean up the listener: {0}", stopEx.Message);
+                }
+                _listener = null;
+                _lastStartError = DescribeStartFailure(ex, _port);
                 _logger.Error("Socket 服务启动失败 / Failed to start socket service: {0}", ex.Message);
             }
+        }
+
+        /// <summary>
+        /// <para>启动失败的说明：端口与原因。</para>
+        /// <para>One line for a failed start: the port and why.</para>
+        /// </summary>
+        public static string DescribeStartFailure(Exception ex, int port)
+        {
+            if (ex is SocketException socketEx)
+            {
+                switch (socketEx.SocketErrorCode)
+                {
+                    case SocketError.AddressAlreadyInUse:
+                        return $"port {port} is already in use (another Revit or another program is listening on it). " +
+                               "Turn the bridge off there, or choose another port in the Revit Bridge panel (Advanced).";
+                    case SocketError.AccessDenied:
+                        return $"port {port} cannot be used (access denied; Windows may have reserved it). " +
+                               "Choose another port in the Revit Bridge panel (Advanced).";
+                }
+                return $"port {port}: {socketEx.Message} ({socketEx.SocketErrorCode})";
+            }
+            return $"port {port}: {ex.Message}";
         }
 
         public void Stop()

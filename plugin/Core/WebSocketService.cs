@@ -49,6 +49,7 @@ namespace revit_mcp_plugin.Core
         private volatile ICommandRegistry _commandRegistry;
         private ILogger _logger;
         private CommandExecutor _commandExecutor;
+        private volatile string _configLoadError;
         private string _authToken;
         private bool _allowRemoteCodeExecution;
         private bool _confirmEachRun = true;
@@ -108,6 +109,31 @@ namespace revit_mcp_plugin.Core
         /// <summary>The deviceId the server refused, or null.</summary>
         public string UnpairedDeviceId => _unpairedDeviceId;
 
+        /// <summary>Why commandRegistry.json was not read at the last load, or null.</summary>
+        public string ConfigLoadError => _configLoadError;
+
+        /// <summary>Number of methods the current registry answers.</summary>
+        public int RegisteredMethodCount => SocketService.CountMethods(_commandRegistry);
+
+        /// <summary>
+        /// <para>连接状态变了（连上、断开、被拒、工作线程结束）。在工作线程上触发；订阅者自己切回 UI 线程。</para>
+        /// <para>The connection state changed (connected, lost, refused, worker ended). Raised
+        /// on the worker thread; subscribers move to the UI thread themselves.</para>
+        /// </summary>
+        public event Action StateChanged;
+
+        private void NotifyStateChanged()
+        {
+            try
+            {
+                StateChanged?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug("状态通知失败 / State notification failed: {0}", ex.Message);
+            }
+        }
+
         /// <summary>
         /// Initialize with Revit context and load commands.
         /// Call this before Start().
@@ -124,6 +150,7 @@ namespace revit_mcp_plugin.Core
 
             ConfigurationManager configManager = new ConfigurationManager(_logger);
             configManager.LoadConfiguration();
+            _configLoadError = configManager.LoadError;
 
             // 读取鉴权 token 与代码执行开关（可选增强，缺失时向后兼容）
             // Read auth token and code-execution switch (optional; backward compatible).
@@ -153,6 +180,7 @@ namespace revit_mcp_plugin.Core
 
             ConfigurationManager configManager = new ConfigurationManager(_logger);
             configManager.LoadConfiguration();
+            _configLoadError = configManager.LoadError;
             LoadCommandRegistry(configManager);
             _logger.Info("WebSocket service commands reloaded");
         }
@@ -261,8 +289,13 @@ namespace revit_mcp_plugin.Core
                 {
                     _isRunning = false;
                     _logger.Warning("设备未配对或已吊销，已停止重连 / Device unpaired or revoked; stopped reconnecting.");
+                    NotifyStateChanged();
                     break;
                 }
+
+                // 断开（或连接失败）：功能区按钮的提示随之更新。
+                // Disconnected (or could not connect): the ribbon button's tooltip follows.
+                NotifyStateChanged();
 
                 // Wait before reconnecting; Stop ends the wait at once.
                 _logger.Info($"Reconnecting in {_reconnectDelayMs / 1000}s...");
@@ -306,6 +339,7 @@ namespace revit_mcp_plugin.Core
                 endOfMessage: true,
                 cancellationToken: stopToken);
             _logger.Info("已发送鉴权握手 / Auth handshake sent");
+            NotifyStateChanged();
 
             // Receive loop
             var buffer = new byte[65536];
@@ -396,7 +430,7 @@ namespace revit_mcp_plugin.Core
                 _unpairedDeviceId = _deviceId;
                 _lastConnectionError =
                     $"Unpaired or revoked ({CloseUnpairedOrRevoked}){detail}. " +
-                    "Pair this Revit again in Settings > Connection.";
+                    "Pair this Revit again in the Revit Bridge panel (Shift+click the Revit Bridge button).";
                 _logger.Warning(
                     "服务器拒绝本设备（未配对/已吊销）/ Server refused this device (unpaired or revoked){0}",
                     detail);
