@@ -14,6 +14,13 @@ namespace revit_mcp_plugin.Configuration
 
         public FrameworkConfig Config { get; private set; }
 
+        /// <summary>
+        /// <para>为什么没有读到配置（文件缺失、为空或损坏）；读到时为 null。</para>
+        /// <para>Why the configuration was not read (missing, empty or damaged file); null when
+        /// it was. The ribbon button and the panel show it.</para>
+        /// </summary>
+        public string LoadError { get; private set; }
+
         public ConfigurationManager(ILogger logger)
         {
             _logger = logger;
@@ -30,6 +37,7 @@ namespace revit_mcp_plugin.Configuration
         public void LoadConfiguration()
         {
             FrameworkConfig loaded = null;
+            LoadError = null;
             try
             {
                 if (File.Exists(_configPath))
@@ -40,6 +48,7 @@ namespace revit_mcp_plugin.Configuration
                     {
                         // 空文件反序列化为 null。不自动覆盖，由用户修复或重装。
                         // An empty file deserializes to null. Not overwritten automatically.
+                        LoadError = "commandRegistry.json is empty";
                         _logger.Error("配置文件为空，未加载任何命令: {0}\n请修复该文件，或重新运行安装程序恢复它。\n" +
                                       "The configuration file is empty, so no commands were loaded: {0}\n" +
                                       "Repair the file, or re-run the installer to restore it.", _configPath);
@@ -51,11 +60,13 @@ namespace revit_mcp_plugin.Configuration
                 }
                 else
                 {
+                    LoadError = "commandRegistry.json was not found";
                     _logger.Error("未找到配置文件\nNo configuration file found.");
                 }
             }
             catch (Exception ex)
             {
+                LoadError = "commandRegistry.json could not be read: " + ex.Message;
                 // 损坏的文件保持原样（不自动覆盖），本次按空配置继续。
                 // A damaged file is left as it is (not overwritten); this run goes on with an
                 // empty configuration.

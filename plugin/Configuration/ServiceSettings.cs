@@ -82,15 +82,21 @@ namespace revit_mcp_plugin.Configuration
         [JsonProperty("allowRemoteCodeExecution")]
         public bool AllowRemoteCodeExecution { get; set; } = false;
 
-        // An absent key keeps the old mode-dependent behavior. Do not write an
-        // inferred value back merely because the user changed another setting.
+        /// <summary>
+        /// <para>"Allow my tools": user command sets (other folders under Commands\) and
+        /// manage_solidified_tools register/run. Off unless the key is true: a new install,
+        /// a registry from 0.5.0 or older (no key) and a registry that cannot be read all
+        /// start with it off. An absent key stays absent when another setting is saved.</para>
+        /// </summary>
         [JsonProperty("localTools", NullValueHandling = NullValueHandling.Ignore)]
         public bool? LocalTools { get; set; }
 
         [JsonIgnore]
-        public bool LocalToolsEnabled => LocalTools ??
-            !string.Equals(Mode, "websocket", StringComparison.OrdinalIgnoreCase);
+        public bool LocalToolsEnabled => LocalTools == true;
 
+        /// <summary>
+        /// <para>Turn the bridge on when Revit starts. Default off.</para>
+        /// </summary>
         [JsonProperty("autoStart")]
         public bool AutoStart { get; set; } = false;
 

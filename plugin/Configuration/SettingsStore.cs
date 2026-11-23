@@ -44,6 +44,53 @@ namespace revit_mcp_plugin.Configuration
         }
 
         /// <summary>
+        /// <para>Like <see cref="Load"/>, but never throws, for the ribbon button and the panel.
+        /// A file that cannot be read or parsed gives the defaults (local mode, port 18080,
+        /// "Allow my tools" off, no auto start) and its reason in <paramref name="error"/>;
+        /// the file itself is left as it is. Settings and Commands are never null.</para>
+        /// </summary>
+        public static FrameworkConfig LoadOrDefaults(out string error)
+        {
+            error = null;
+            FrameworkConfig config = null;
+            try
+            {
+                lock (FileLock)
+                {
+                    // Reading never creates the file (Revit start-up calls this).
+                    string configPath = PathManager.GetCommandRegistryFilePath(createIfNotExists: false);
+                    if (!File.Exists(configPath))
+                        error = "commandRegistry.json was not found";
+                    else
+                    {
+                        string json = File.ReadAllText(configPath);
+                        if (string.IsNullOrWhiteSpace(json))
+                            error = "commandRegistry.json is empty";
+                        else
+                        {
+                            config = JsonConvert.DeserializeObject<FrameworkConfig>(json);
+                            if (config == null)
+                                error = "commandRegistry.json does not contain a JSON object";
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                // Only the message: Json.NET names the path and position, not the values.
+                error = "commandRegistry.json could not be read: " + ex.Message;
+            }
+
+            if (config == null)
+                config = new FrameworkConfig();
+            if (config.Settings == null)
+                config.Settings = new ServiceSettings();
+            if (config.Commands == null)
+                config.Commands = new List<CommandConfig>();
+            return config;
+        }
+
+        /// <summary>
         /// <para>在同一把锁内读文件、改 settings、写回。只写 ServiceSettings 认识的字段；settings 里和
         /// 文件顶层本版本不认识的属性原样保留。失败时抛出且文件不变——文件为空、为 null、不是对象或
         /// 不是有效 JSON 时也一样（不会用默认值重写）。</para>
