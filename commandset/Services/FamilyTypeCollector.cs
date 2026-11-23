@@ -40,8 +40,17 @@ namespace RevitMCPCommandSet.Services
         /// With categories: every element type of those categories. First the ones from that
         /// list, in the same order, then the others (pipe, duct, stair, railing types and so
         /// on) in collector order.</para>
+        /// <para>类别判断逐个容错：读不出类别（抛异常）的元素类型当作不属于这些类别，跳过，每个只报一次给
+        /// <paramref name="categoryUnreadable"/>（可为 null：get_available_family_types 的回复没有放警告的地方）。
+        /// 不抛异常时结果与逐个直接判断完全相同。</para>
+        /// <para>The category test is tolerant per element: an element type whose category cannot
+        /// be read (it throws) counts as not in those categories and is skipped, reported once to
+        /// <paramref name="categoryUnreadable"/> (may be null: get_available_family_types has no
+        /// place for warnings in its reply). Without exceptions the result is exactly that of the
+        /// plain test.</para>
         /// </summary>
-        public static IEnumerable<ElementType> Collect(Document doc, List<int> categoryIds)
+        public static IEnumerable<ElementType> Collect(Document doc, List<int> categoryIds,
+            Action<ElementType, Exception> categoryUnreadable = null)
         {
             // 可载入族
             var familySymbols = new FilteredElementCollector(doc)
@@ -70,12 +79,33 @@ namespace RevitMCPCommandSet.Services
             // Category filter. The six classes above miss pipe, duct, stair, railing and other
             // types; the rest of these categories' element types are appended, so the part the
             // old list already had keeps its content and order.
-            var listed = allElements.Where(et => IsInCategories(et, categoryIds)).ToList();
+            var unreadable = new HashSet<long>();
+            bool InCategories(ElementType et)
+            {
+                try
+                {
+                    return IsInCategories(et, categoryIds);
+                }
+                catch (Exception ex)
+                {
+                    // 两轮都可能碰到同一个元素：只报一次。
+                    // Both passes can meet the same element: report it once.
+                    if (unreadable.Add(et.Id.GetValue()))
+                        categoryUnreadable?.Invoke(et, ex);
+                    return false;
+                }
+            }
+
+            var listed = allElements.Where(InCategories).ToList();
             var listedIds = new HashSet<long>(listed.Select(et => et.Id.GetValue()));
             var others = new FilteredElementCollector(doc)
                 .WhereElementIsElementType()
                 .OfType<ElementType>()
-                .Where(et => IsInCategories(et, categoryIds) && !listedIds.Contains(et.Id.GetValue()));
+                .Where(et =>
+                {
+                    long id = et.Id.GetValue();
+                    return !listedIds.Contains(id) && !unreadable.Contains(id) && InCategories(et);
+                });
 
             return listed.Concat(others);
         }

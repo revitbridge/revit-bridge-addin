@@ -31,7 +31,10 @@ namespace RevitMCPCommandSet.Services
             {
                 var doc = app.ActiveUIDocument.Document;
 
-                // 收集与类别过滤（FamilyTypeCollector）
+                // 收集与类别过滤（FamilyTypeCollector）。读不出类别的元素类型算作不属于所求类别，跳过；
+                // 这个回复（FamilyTypeInfo 数组）没有放警告的地方。
+                // An element type whose category cannot be read counts as not in the requested
+                // categories and is skipped; this reply (a FamilyTypeInfo array) has no place for warnings.
                 List<int> validCategoryIds = FamilyTypeCollector.ParseCategoryIds(CategoryList);
                 IEnumerable<ElementType> filteredElements = FamilyTypeCollector.Collect(doc, validCategoryIds);
 

@@ -319,7 +319,10 @@ namespace RevitMCPCommandSet.Services
 
             if (request.Ids == null)
             {
-                foreach (ElementType type in FamilyTypeCollector.Collect(doc, categoryIds))
+                // 读不出类别的元素类型跳过，在 Warnings 里记一行；其余照常。
+                // An element type whose category cannot be read is skipped with a line in Warnings.
+                foreach (ElementType type in FamilyTypeCollector.Collect(doc, categoryIds,
+                    (unreadable, ex) => rows.Warn($"type {unreadable.Id.GetValue()} skipped, its category cannot be read: {Describe(ex)}")))
                     AddType(type, rows);
                 return;
             }
