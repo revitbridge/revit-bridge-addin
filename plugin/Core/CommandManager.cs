@@ -6,6 +6,8 @@ using revit_mcp_plugin.Utils;
 using System;
 using System.IO;
 using System.Reflection;
+using Newtonsoft.Json.Linq;
+using System.Linq;
 
 namespace revit_mcp_plugin.Core
 {
@@ -20,6 +22,7 @@ namespace revit_mcp_plugin.Core
         private readonly ConfigurationManager _configManager;
         private readonly UIApplication _uiApplication;
         private readonly RevitVersionAdapter _versionAdapter;
+        private string _currentVersion;
 
         /// <summary>
         /// Manager in charge of loading and managing commands.
@@ -49,6 +52,7 @@ namespace revit_mcp_plugin.Core
         {
             _logger.Info("开始加载命令\nStart loading command.");
             string currentVersion = _versionAdapter.GetRevitVersion();
+            _currentVersion = currentVersion;
             _logger.Info("当前 Revit 版本: {0}\nCurrent Revit version: {0}", currentVersion);
 
             // 从配置加载外部命令
@@ -121,6 +125,20 @@ namespace revit_mcp_plugin.Core
                     assemblyPath = Path.Combine(baseDir, assemblyPath);
                 }
 
+                assemblyPath = Path.GetFullPath(assemblyPath);
+                bool official = IsOfficialAssembly(assemblyPath, _currentVersion);
+                if (!official && !(_configManager.Config.Settings ?? new ServiceSettings()).LocalToolsEnabled)
+                {
+                    _logger.Info("User tools are not enabled; skipped command {0}.", config.CommandName);
+                    return;
+                }
+                if (!official && _configManager.Config.Commands.Any(candidate =>
+                    IsOfficialCommand(candidate, config.CommandName)))
+                {
+                    _logger.Warning("User command {0} cannot replace an installed official command.", config.CommandName);
+                    return;
+                }
+
                 if (!File.Exists(assemblyPath))
                 {
                     _logger.Error("命令程序集不存在: {0}\nCommand assembly does not exist: {0}", assemblyPath);
@@ -183,6 +201,10 @@ namespace revit_mcp_plugin.Core
                             // Check whether the command name matches the configuration.
                             if (command.CommandName == config.CommandName)
                             {
+                                // Gate again on each request. A registry can survive a service
+                                // restart, and a user can turn access off after loading a DLL.
+                                if (!official || command.CommandName == "manage_solidified_tools")
+                                    command = new ToolAccessCommand(command, assemblyPath, official, _currentVersion);
                                 _commandRegistry.RegisterCommand(command);
                                 _logger.Info("成功注册命令 [{0}] 来自 {1}\nRegistered command [{0}] from {1}",
                                     command.CommandName, Path.GetFileName(assemblyPath));
@@ -199,6 +221,94 @@ namespace revit_mcp_plugin.Core
             catch (Exception ex)
             {
                 _logger.Error("加载命令程序集失败: {0}\nFailed to load command assembly: {0}", ex.Message);
+            }
+        }
+
+        private bool IsOfficialCommand(CommandConfig candidate, string commandName)
+        {
+            if (candidate == null || candidate.CommandName != commandName || string.IsNullOrWhiteSpace(candidate.AssemblyPath))
+                return false;
+            try
+            {
+                string path = candidate.AssemblyPath.Replace("{VERSION}", _currentVersion);
+                if (!Path.IsPathRooted(path))
+                    path = Path.Combine(Path.GetDirectoryName(typeof(CommandManager).Assembly.Location), "Commands", path);
+                return IsOfficialAssembly(path, _currentVersion);
+            }
+            catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException || ex is PathTooLongException)
+            {
+                return false;
+            }
+        }
+
+        internal static bool IsOfficialAssembly(string assemblyPath, string version)
+        {
+            string installed = Path.Combine(Path.GetDirectoryName(typeof(CommandManager).Assembly.Location),
+                "Commands", "RevitMCPCommandSet", version, "RevitMCPCommandSet.dll");
+            return string.Equals(Path.GetFullPath(assemblyPath), Path.GetFullPath(installed),
+                StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Execute is called by the existing TCP/WebSocket workers. Only those
+        // workers read the current policy here; no Revit API is called by this guard.
+        private sealed class ToolAccessCommand : IRevitCommand
+        {
+            private readonly IRevitCommand _inner;
+            private readonly string _assemblyPath;
+            private readonly bool _official;
+            private readonly string _version;
+
+            public ToolAccessCommand(IRevitCommand inner, string assemblyPath, bool official, string version)
+            {
+                _inner = inner;
+                _assemblyPath = assemblyPath;
+                _official = official;
+                _version = version;
+            }
+
+            public string CommandName => _inner.CommandName;
+
+            public object Execute(JObject parameters, string requestId)
+            {
+                bool requiresAccess = !_official;
+                if (_official)
+                {
+                    string action = parameters?.Value<string>("action") ?? "list";
+                    requiresAccess = string.Equals(action, "register", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(action, "run", StringComparison.OrdinalIgnoreCase);
+                }
+
+                if (requiresAccess)
+                {
+                    FrameworkConfig current = SettingsStore.Load();
+                    if (!(current.Settings ?? new ServiceSettings()).LocalToolsEnabled)
+                        throw new InvalidOperationException(
+                            "User tools are not enabled. Enable access to user tools before retrying.");
+
+                    if (!_official && !(current.Commands ?? new System.Collections.Generic.List<CommandConfig>())
+                        .Any(MatchesEnabledCommand))
+                        throw new InvalidOperationException("This user command is not enabled in Revit MCP settings.");
+                }
+                return _inner.Execute(parameters, requestId);
+            }
+
+            private bool MatchesEnabledCommand(CommandConfig candidate)
+            {
+                if (candidate == null || !candidate.Enabled || candidate.CommandName != CommandName ||
+                    string.IsNullOrWhiteSpace(candidate.AssemblyPath))
+                    return false;
+                try
+                {
+                    string path = candidate.AssemblyPath.Replace("{VERSION}", _version);
+                    if (!Path.IsPathRooted(path))
+                        path = Path.Combine(Path.GetDirectoryName(typeof(CommandManager).Assembly.Location), "Commands", path);
+                    return string.Equals(Path.GetFullPath(path), _assemblyPath, StringComparison.OrdinalIgnoreCase);
+                }
+                catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException || ex is PathTooLongException)
+                {
+                    // One malformed path cannot hide a later valid entry.
+                    return false;
+                }
             }
         }
     }

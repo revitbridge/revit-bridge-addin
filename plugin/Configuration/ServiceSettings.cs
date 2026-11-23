@@ -2,10 +2,15 @@
 
 namespace revit_mcp_plugin.Configuration
 {
+    using Newtonsoft.Json.Linq;
+    using System;
+    using System.Collections.Generic;
+
     /// <summary>
     /// <para>服务设置类</para>
     /// <para>Service settings.</para>
     /// </summary>
+    [JsonConverter(typeof(ServiceSettingsConverter))]
     public class ServiceSettings
     {
         /// <summary>
@@ -77,6 +82,22 @@ namespace revit_mcp_plugin.Configuration
         [JsonProperty("allowRemoteCodeExecution")]
         public bool AllowRemoteCodeExecution { get; set; } = false;
 
+        // An absent key keeps the old mode-dependent behavior. Do not write an
+        // inferred value back merely because the user changed another setting.
+        [JsonProperty("localTools", NullValueHandling = NullValueHandling.Ignore)]
+        public bool? LocalTools { get; set; }
+
+        [JsonIgnore]
+        public bool LocalToolsEnabled => LocalTools ??
+            !string.Equals(Mode, "websocket", StringComparison.OrdinalIgnoreCase);
+
+        [JsonProperty("autoStart")]
+        public bool AutoStart { get; set; } = false;
+
+        // Only field names are retained, never rejected values (which can be secrets).
+        [JsonIgnore]
+        public List<string> InvalidFields { get; } = new List<string>();
+
         /// <summary>
         /// <para>是否已配对：deviceId 与 token 均非空。</para>
         /// <para>Paired = both deviceId and token are present.</para>
@@ -84,5 +105,87 @@ namespace revit_mcp_plugin.Configuration
         [JsonIgnore]
         public bool IsPaired =>
             !string.IsNullOrWhiteSpace(DeviceId) && !string.IsNullOrWhiteSpace(Token);
+    }
+
+    /// <summary>
+    /// Read each setting independently. A bad value must not discard pairing,
+    /// command selections or unrelated valid settings in an older registry.
+    /// Applies to all existing JsonConvert and SettingsStore load paths.
+    /// </summary>
+    public sealed class ServiceSettingsConverter : JsonConverter
+    {
+        public override bool CanConvert(Type objectType) => objectType == typeof(ServiceSettings);
+        public override bool CanWrite => false;
+
+        public override object ReadJson(JsonReader reader, Type objectType, object existingValue,
+            JsonSerializer serializer)
+        {
+            var result = new ServiceSettings();
+            var token = JToken.Load(reader);
+            if (!(token is JObject settings))
+            {
+                result.InvalidFields.Add("settings");
+                return result;
+            }
+
+            foreach (var property in settings.Properties())
+            {
+                try
+                {
+                    var value = property.Value;
+                    switch (property.Name.ToLowerInvariant())
+                    {
+                        case "loglevel": result.LogLevel = ReadString(value); break;
+                        case "port":
+                            if (value.Type != JTokenType.Integer)
+                                throw new JsonSerializationException("Expected an integer.");
+                            int port = value.Value<int>();
+                            if (port < 1 || port > 65535)
+                                throw new JsonSerializationException("Port is out of range.");
+                            result.Port = port;
+                            break;
+                        case "mode":
+                            string mode = ReadString(value);
+                            if (!string.Equals(mode, "tcp", StringComparison.OrdinalIgnoreCase) &&
+                                !string.Equals(mode, "websocket", StringComparison.OrdinalIgnoreCase))
+                                throw new JsonSerializationException("Unknown connection mode.");
+                            result.Mode = mode;
+                            break;
+                        case "wsurl": result.WsUrl = ReadString(value); break;
+                        case "deviceid": result.DeviceId = ReadString(value); break;
+                        case "token": result.Token = ReadString(value); break;
+                        case "confirmeachrun": result.ConfirmEachRun = ReadBoolean(value); break;
+                        case "allowremotecodeexecution": result.AllowRemoteCodeExecution = ReadBoolean(value); break;
+                        case "localtools": result.LocalTools = ReadBoolean(value); break;
+                        case "autostart": result.AutoStart = ReadBoolean(value); break;
+                    }
+                }
+                catch (Exception ex) when (ex is JsonException || ex is InvalidCastException ||
+                                           ex is FormatException || ex is OverflowException)
+                {
+                    result.InvalidFields.Add(property.Name);
+                }
+            }
+            return result;
+        }
+
+        private static string ReadString(JToken token)
+        {
+            if (token.Type != JTokenType.String)
+                throw new JsonSerializationException("Expected a string.");
+            return token.Value<string>();
+        }
+
+        private static bool ReadBoolean(JToken token)
+        {
+            if (token.Type != JTokenType.Boolean)
+                throw new JsonSerializationException("Expected a boolean.");
+            return token.Value<bool>();
+        }
+
+        public override void WriteJson(JsonWriter writer, object value, JsonSerializer serializer)
+        {
+            throw new NotSupportedException("Default property serialization is used for settings.");
+        }
     }
 }
