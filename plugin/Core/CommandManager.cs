@@ -274,8 +274,11 @@ namespace revit_mcp_plugin.Core
                 if (_official)
                 {
                     string action = parameters?.Value<string>("action") ?? "list";
-                    requiresAccess = string.Equals(action, "register", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(action, "run", StringComparison.OrdinalIgnoreCase);
+                    // SolidifiedToolCommand dispatches with action.ToLower().
+                    // Match that exact culture-sensitive interpretation before
+                    // forwarding, including dotted I under the Turkish culture.
+                    string dispatchedAction = action.ToLower(System.Globalization.CultureInfo.CurrentCulture);
+                    requiresAccess = dispatchedAction == "register" || dispatchedAction == "run";
                 }
 
                 if (requiresAccess)

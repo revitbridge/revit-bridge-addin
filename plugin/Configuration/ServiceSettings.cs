@@ -121,7 +121,20 @@ namespace revit_mcp_plugin.Configuration
             JsonSerializer serializer)
         {
             var result = new ServiceSettings();
-            var token = JToken.Load(reader);
+            // Credentials and addresses are literal strings, including strings
+            // that look like ISO dates. The default reader otherwise converts
+            // them to Date tokens before per-property validation can see them.
+            var previousDateHandling = reader.DateParseHandling;
+            JToken token;
+            try
+            {
+                reader.DateParseHandling = DateParseHandling.None;
+                token = JToken.Load(reader);
+            }
+            finally
+            {
+                reader.DateParseHandling = previousDateHandling;
+            }
             if (!(token is JObject settings))
             {
                 result.InvalidFields.Add("settings");
