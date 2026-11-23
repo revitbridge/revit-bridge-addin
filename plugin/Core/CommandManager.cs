@@ -4,6 +4,8 @@ using RevitMCPSDK.API.Utils;
 using revit_mcp_plugin.Configuration;
 using revit_mcp_plugin.Utils;
 using System;
+using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Reflection;
 using Newtonsoft.Json.Linq;
@@ -23,6 +25,12 @@ namespace revit_mcp_plugin.Core
         private readonly UIApplication _uiApplication;
         private readonly RevitVersionAdapter _versionAdapter;
         private string _currentVersion;
+        private bool _userToolsAllowed;
+
+        // User commands registered by this load, and configured user commands this load
+        // skipped because "Allow my tools" is off. Published to UserToolAccess at the end.
+        private readonly List<string> _loadedUserMethods = new List<string>();
+        private readonly List<string> _blockedUserMethods = new List<string>();
 
         /// <summary>
         /// Manager in charge of loading and managing commands.
@@ -54,6 +62,13 @@ namespace revit_mcp_plugin.Core
             string currentVersion = _versionAdapter.GetRevitVersion();
             _currentVersion = currentVersion;
             _logger.Info("当前 Revit 版本: {0}\nCurrent Revit version: {0}", currentVersion);
+
+            // "Allow my tools" as the configuration says now; the services check it per request.
+            _userToolsAllowed = (_configManager.Config.Settings ?? new ServiceSettings()).LocalToolsEnabled;
+            UserToolAccess.Allowed = _userToolsAllowed;
+            _loadedUserMethods.Clear();
+            _blockedUserMethods.Clear();
+            _logger.Info("Allow my tools: {0}", _userToolsAllowed ? "on" : "off");
 
             // 从配置加载外部命令
             // Load external commands from the configuration file.
@@ -102,6 +117,7 @@ namespace revit_mcp_plugin.Core
                 }
             }
 
+            UserToolAccess.SetLoadedCommands(_loadedUserMethods, _blockedUserMethods);
             _logger.Info("命令加载完成\nCommand loading complete.");
         }
 
@@ -126,16 +142,22 @@ namespace revit_mcp_plugin.Core
                 }
 
                 assemblyPath = Path.GetFullPath(assemblyPath);
+                // 官方命令集按安装目录里的程序集路径认，不按名字认。
+                // The official command set is recognised by the assembly path in the install
+                // folder, never by a name.
                 bool official = IsOfficialAssembly(assemblyPath, _currentVersion);
-                if (!official && !(_configManager.Config.Settings ?? new ServiceSettings()).LocalToolsEnabled)
-                {
-                    _logger.Info("User tools are not enabled; skipped command {0}.", config.CommandName);
-                    return;
-                }
                 if (!official && _configManager.Config.Commands.Any(candidate =>
                     IsOfficialCommand(candidate, config.CommandName)))
                 {
                     _logger.Warning("User command {0} cannot replace an installed official command.", config.CommandName);
+                    return;
+                }
+                if (!official && !_userToolsAllowed)
+                {
+                    // Not loaded at all; a request for it is answered with UserToolAccess.ErrorCode.
+                    _blockedUserMethods.Add(config.CommandName);
+                    _logger.Info("Allow my tools is off; skipped user command {0} from {1}.",
+                        config.CommandName, Path.GetFileName(assemblyPath));
                     return;
                 }
 
@@ -201,11 +223,13 @@ namespace revit_mcp_plugin.Core
                             // Check whether the command name matches the configuration.
                             if (command.CommandName == config.CommandName)
                             {
-                                // Gate again on each request. A registry can survive a service
-                                // restart, and a user can turn access off after loading a DLL.
-                                if (!official || command.CommandName == "manage_solidified_tools")
-                                    command = new ToolAccessCommand(command, assemblyPath, official, _currentVersion);
+                                // get_bridge_capabilities also reports "Allow my tools" and the
+                                // user commands loaded (an added "user_tools" field).
+                                if (official && command.CommandName == UserToolAccess.CapabilitiesMethod)
+                                    command = new CapabilitiesWithUserTools(command);
                                 _commandRegistry.RegisterCommand(command);
+                                if (!official)
+                                    _loadedUserMethods.Add(command.CommandName);
                                 _logger.Info("成功注册命令 [{0}] 来自 {1}\nRegistered command [{0}] from {1}",
                                     command.CommandName, Path.GetFileName(assemblyPath));
                                 break; // 找到匹配的命令后退出循环 - Exit the loop after finding a matching command.
@@ -249,70 +273,145 @@ namespace revit_mcp_plugin.Core
                 StringComparison.OrdinalIgnoreCase);
         }
 
-        // Execute is called by the existing TCP/WebSocket workers. Only those
-        // workers read the current policy here; no Revit API is called by this guard.
-        private sealed class ToolAccessCommand : IRevitCommand
+        /// <summary>
+        /// <para>get_bridge_capabilities as the command set answers it, plus one added field:
+        /// <c>"user_tools": {"allowed": bool, "methods": [user commands loaded, sorted]}</c>.
+        /// Existing fields are not touched. Runs on the socket thread; no Revit API.</para>
+        /// </summary>
+        private sealed class CapabilitiesWithUserTools : IRevitCommand
         {
             private readonly IRevitCommand _inner;
-            private readonly string _assemblyPath;
-            private readonly bool _official;
-            private readonly string _version;
 
-            public ToolAccessCommand(IRevitCommand inner, string assemblyPath, bool official, string version)
+            public CapabilitiesWithUserTools(IRevitCommand inner)
             {
                 _inner = inner;
-                _assemblyPath = assemblyPath;
-                _official = official;
-                _version = version;
             }
 
             public string CommandName => _inner.CommandName;
 
             public object Execute(JObject parameters, string requestId)
             {
-                bool requiresAccess = !_official;
-                if (_official)
-                {
-                    string action = parameters?.Value<string>("action") ?? "list";
-                    // SolidifiedToolCommand dispatches with action.ToLower().
-                    // Match that exact culture-sensitive interpretation before
-                    // forwarding, including dotted I under the Turkish culture.
-                    string dispatchedAction = action.ToLower(System.Globalization.CultureInfo.CurrentCulture);
-                    requiresAccess = dispatchedAction == "register" || dispatchedAction == "run";
-                }
-
-                if (requiresAccess)
-                {
-                    FrameworkConfig current = SettingsStore.Load();
-                    if (!(current.Settings ?? new ServiceSettings()).LocalToolsEnabled)
-                        throw new InvalidOperationException(
-                            "User tools are not enabled. Enable access to user tools before retrying.");
-
-                    if (!_official && !(current.Commands ?? new System.Collections.Generic.List<CommandConfig>())
-                        .Any(MatchesEnabledCommand))
-                        throw new InvalidOperationException("This user command is not enabled in Revit MCP settings.");
-                }
-                return _inner.Execute(parameters, requestId);
+                object result = _inner.Execute(parameters, requestId);
+                if (result is JObject reply && reply.Property(UserToolAccess.CapabilitiesField) == null)
+                    reply[UserToolAccess.CapabilitiesField] = UserToolAccess.Describe();
+                return result;
             }
+        }
+    }
 
-            private bool MatchesEnabledCommand(CommandConfig candidate)
+    /// <summary>
+    /// <para>"Allow my tools" on the service side. Both services (TCP and WebSocket) ask
+    /// <see cref="RefusalFor"/> / <see cref="RefusalForMissing"/> before a request reaches a
+    /// command; a refused request is answered with JSON-RPC error <see cref="ErrorCode"/>.
+    /// When off, refused are: the user commands (any command whose assembly is not the
+    /// installed RevitMCPCommandSet.dll; those are not even loaded) and
+    /// manage_solidified_tools "register" and "run". Everything else - every official
+    /// method, and manage_solidified_tools "list" and "delete" - is unchanged.
+    /// When on, nothing is refused here.</para>
+    /// <para>State lives in memory: CommandManager sets it on every (re)load from the
+    /// configuration, the Revit Bridge panel sets <see cref="Allowed"/> when the checkbox
+    /// changes. Read on socket threads, written on the Revit UI thread.</para>
+    /// </summary>
+    public static class UserToolAccess
+    {
+        /// <summary>JSON-RPC error for a request refused because "Allow my tools" is off.</summary>
+        public const int ErrorCode = -32002;
+
+        public const string SolidifiedToolsMethod = "manage_solidified_tools";
+        public const string CapabilitiesMethod = "get_bridge_capabilities";
+        public const string CapabilitiesField = "user_tools";
+
+        private static volatile bool _allowed;
+        private static volatile HashSet<string> _loaded = new HashSet<string>(StringComparer.Ordinal);
+        private static volatile HashSet<string> _blocked = new HashSet<string>(StringComparer.Ordinal);
+
+        /// <summary>Whether user tools may run now.</summary>
+        public static bool Allowed
+        {
+            get => _allowed;
+            set => _allowed = value;
+        }
+
+        /// <summary>User commands the current registry holds, sorted.</summary>
+        public static IList<string> LoadedUserMethods =>
+            _loaded.OrderBy(name => name, StringComparer.Ordinal).ToList();
+
+        internal static void SetLoadedCommands(IEnumerable<string> loaded, IEnumerable<string> blocked)
+        {
+            // New sets each time: a socket thread reading the old one is never disturbed.
+            _loaded = new HashSet<string>(loaded.Where(name => name != null), StringComparer.Ordinal);
+            _blocked = new HashSet<string>(blocked.Where(name => name != null), StringComparer.Ordinal);
+        }
+
+        /// <summary>The "user_tools" object of get_bridge_capabilities.</summary>
+        public static JObject Describe()
+        {
+            return new JObject
             {
-                if (candidate == null || !candidate.Enabled || candidate.CommandName != CommandName ||
-                    string.IsNullOrWhiteSpace(candidate.AssemblyPath))
-                    return false;
-                try
-                {
-                    string path = candidate.AssemblyPath.Replace("{VERSION}", _version);
-                    if (!Path.IsPathRooted(path))
-                        path = Path.Combine(Path.GetDirectoryName(typeof(CommandManager).Assembly.Location), "Commands", path);
-                    return string.Equals(Path.GetFullPath(path), _assemblyPath, StringComparison.OrdinalIgnoreCase);
-                }
-                catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException || ex is PathTooLongException)
-                {
-                    // One malformed path cannot hide a later valid entry.
-                    return false;
-                }
+                ["allowed"] = _allowed,
+                ["methods"] = new JArray(LoadedUserMethods),
+            };
+        }
+
+        /// <summary>
+        /// <para>For a method the registry has: null when the request may go on, else the
+        /// error message. <paramref name="parameters"/> is read only for
+        /// manage_solidified_tools while user tools are off.</para>
+        /// </summary>
+        public static string RefusalFor(string method, Func<JObject> parameters)
+        {
+            return Decide(method, parameters, _allowed, _loaded, _blocked, registered: true);
+        }
+
+        /// <summary>
+        /// <para>For a method the registry does not have: a user command that was not loaded
+        /// because user tools are off gets the error message; anything else null (the caller
+        /// answers "method not found" as before).</para>
+        /// </summary>
+        public static string RefusalForMissing(string method)
+        {
+            return Decide(method, null, _allowed, _loaded, _blocked, registered: false);
+        }
+
+        /// <summary>The decision itself, without shared state (offline checks call it).</summary>
+        public static string Decide(string method, Func<JObject> parameters, bool allowed,
+            ICollection<string> loaded, ICollection<string> blocked, bool registered)
+        {
+            if (allowed || method == null)
+                return null;
+
+            if ((loaded != null && loaded.Contains(method)) || (blocked != null && blocked.Contains(method)))
+                return $"'{method}' is one of your own tools and 'Allow my tools' is off in this Revit. " +
+                       "Turn on 'Allow my tools' in the Revit Bridge panel (Shift+click the Revit Bridge button).";
+
+            if (registered && method == SolidifiedToolsMethod && IsRegisterOrRun(parameters))
+                return "Registering and running solidified tools needs 'Allow my tools', which is off in this Revit. " +
+                       "Turn it on in the Revit Bridge panel (Shift+click the Revit Bridge button). " +
+                       "'list' and 'delete' still work.";
+
+            return null;
+        }
+
+        // SolidifiedToolCommand dispatches on parameters.Value<string>("action") ?? "list",
+        // lower-cased with the current culture. Read it the same way, so that no spelling
+        // that the command would run as register or run (a dotted I under tr-TR, say) slips
+        // past. An action it could not read either is left to the command, which fails on it
+        // as before.
+        private static bool IsRegisterOrRun(Func<JObject> parameters)
+        {
+            string action;
+            try
+            {
+                action = parameters?.Invoke()?.Value<string>("action") ?? "list";
             }
+            catch (Exception ex) when (ex is InvalidCastException || ex is FormatException ||
+                                       ex is ArgumentException || ex is InvalidOperationException)
+            {
+                return false;
+            }
+
+            string dispatched = action.ToLower(CultureInfo.CurrentCulture);
+            return dispatched == "register" || dispatched == "run";
         }
     }
 }

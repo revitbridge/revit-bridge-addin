@@ -45,7 +45,8 @@ namespace revit_mcp_plugin.Core
         private volatile string _unpairedDeviceId;
 
         private UIApplication _uiApp;
-        private ICommandRegistry _commandRegistry;
+        // Every command load fills a new registry and swaps it in whole (see SocketService).
+        private volatile ICommandRegistry _commandRegistry;
         private ILogger _logger;
         private CommandExecutor _commandExecutor;
         private string _authToken;
@@ -121,8 +122,6 @@ namespace revit_mcp_plugin.Core
             string currentVersion = versionAdapter.GetRevitVersion();
             _logger.Info("WebSocket mode — Revit version: {0}", currentVersion);
 
-            _commandExecutor = new CommandExecutor(_commandRegistry, _logger);
-
             ConfigurationManager configManager = new ConfigurationManager(_logger);
             configManager.LoadConfiguration();
 
@@ -138,11 +137,35 @@ namespace revit_mcp_plugin.Core
             // thread; Initialize() runs from the ribbon click.
             ConfirmationPrompt.Initialize();
 
-            CommandManager commandManager = new CommandManager(
-                _commandRegistry, _logger, configManager, _uiApp);
-            commandManager.LoadCommands();
+            LoadCommandRegistry(configManager);
 
             _logger.Info("WebSocket service initialized, commands loaded");
+        }
+
+        /// <summary>
+        /// <para>Read the configuration again and rebuild the command registry (after
+        /// "Allow my tools" changed). Token, allowRemoteCodeExecution and per-run confirmation
+        /// keep their values from the start. Call in a Revit API context.</para>
+        /// </summary>
+        public void ReloadCommands()
+        {
+            if (_uiApp == null) return;
+
+            ConfigurationManager configManager = new ConfigurationManager(_logger);
+            configManager.LoadConfiguration();
+            LoadCommandRegistry(configManager);
+            _logger.Info("WebSocket service commands reloaded");
+        }
+
+        private void LoadCommandRegistry(ConfigurationManager configManager)
+        {
+            var registry = new RevitCommandRegistry();
+            CommandManager commandManager = new CommandManager(
+                registry, _logger, configManager, _uiApp);
+            commandManager.LoadCommands();
+
+            _commandRegistry = registry;
+            _commandExecutor = new CommandExecutor(registry, _logger);
         }
 
         /// <summary>
@@ -431,11 +454,29 @@ namespace revit_mcp_plugin.Core
                         $"Method '{request.Method}' is disabled. Set 'allowRemoteCodeExecution' to enable.");
                 }
 
-                if (!_commandRegistry.TryGetCommand(request.Method, out var command))
+                ICommandRegistry registry = _commandRegistry;
+                if (!registry.TryGetCommand(request.Method, out var command))
                 {
+                    // A user command not loaded because "Allow my tools" is off: say so.
+                    string notLoaded = UserToolAccess.RefusalForMissing(request.Method);
+                    if (notLoaded != null)
+                    {
+                        _logger.Warning("已拒绝用户工具 {0}（允许接入我的工具：关）\nRefused user tool {0} (Allow my tools: off).", request.Method);
+                        return CreateErrorResponse(request.Id, UserToolAccess.ErrorCode, notLoaded);
+                    }
                     return CreateErrorResponse(request.Id,
                         JsonRPCErrorCodes.MethodNotFound,
                         $"Method '{request.Method}' not found");
+                }
+
+                // "允许接入我的工具"关闭时，用户命令与固化工具的登记、运行在服务端拒绝。
+                // With "Allow my tools" off, user commands and solidified-tool register/run
+                // are refused here, before any prompt or command runs.
+                string refusal = UserToolAccess.RefusalFor(request.Method, request.GetParamsObject);
+                if (refusal != null)
+                {
+                    _logger.Warning("已拒绝用户工具 {0}（允许接入我的工具：关）\nRefused user tool {0} (Allow my tools: off).", request.Method);
+                    return CreateErrorResponse(request.Id, UserToolAccess.ErrorCode, refusal);
                 }
 
                 // 逐次确认：服务器给即席代码的请求加 confirm 参数，设备侧弹窗询问设计师。
