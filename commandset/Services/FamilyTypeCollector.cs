@@ -1,4 +1,5 @@
 using RevitMCPCommandSet.Models.Common;
+using RevitMCPCommandSet.Utils;
 
 namespace RevitMCPCommandSet.Services
 {
@@ -31,11 +32,14 @@ namespace RevitMCPCommandSet.Services
         }
 
         /// <summary>
-        /// <para>可载入族的类型，加上墙、楼板、屋顶、天花板、幕墙系统五种系统族类型，依此顺序；
-        /// 给了类别时只留这些类别的。</para>
-        /// <para>Loadable family symbols, then the system types of five classes (wall, floor, roof,
-        /// ceiling, curtain system), in this order; narrowed to the given categories when there
-        /// are any.</para>
+        /// <para>没给类别：可载入族的类型，加上墙、楼板、屋顶、天花板、幕墙系统五种系统族类型，依此顺序（与以前相同）。
+        /// 给了类别：这些类别的全部元素类型。先是上面那份列表里属于这些类别的（顺序不变），
+        /// 再接上其余的（管道、风管、楼梯、栏杆等类型），按收集器的顺序。</para>
+        /// <para>Without categories: loadable family symbols, then the system types of five
+        /// classes (wall, floor, roof, ceiling, curtain system), in this order (as before).
+        /// With categories: every element type of those categories. First the ones from that
+        /// list, in the same order, then the others (pipe, duct, stair, railing types and so
+        /// on) in collector order.</para>
         /// </summary>
         public static IEnumerable<ElementType> Collect(Document doc, List<int> categoryIds)
         {
@@ -56,15 +60,24 @@ namespace RevitMCPCommandSet.Services
                 .Concat(systemTypes)
                 .ToList();
 
-            IEnumerable<ElementType> filteredElements = allElements;
-
-            // 类别过滤
-            if (categoryIds != null && categoryIds.Any())
+            if (categoryIds == null || !categoryIds.Any())
             {
-                filteredElements = filteredElements.Where(et => IsInCategories(et, categoryIds));
+                return allElements;
             }
 
-            return filteredElements;
+            // 类别过滤。以前只在上面六个类里找，管道、风管、楼梯、栏杆等类型找不到；
+            // 现在再从全部元素类型里补上这些类别中其余的，以前就有的那部分结果与顺序不变。
+            // Category filter. The six classes above miss pipe, duct, stair, railing and other
+            // types; the rest of these categories' element types are appended, so the part the
+            // old list already had keeps its content and order.
+            var listed = allElements.Where(et => IsInCategories(et, categoryIds)).ToList();
+            var listedIds = new HashSet<long>(listed.Select(et => et.Id.GetValue()));
+            var others = new FilteredElementCollector(doc)
+                .WhereElementIsElementType()
+                .OfType<ElementType>()
+                .Where(et => IsInCategories(et, categoryIds) && !listedIds.Contains(et.Id.GetValue()));
+
+            return listed.Concat(others);
         }
 
         private static bool IsInCategories(ElementType et, List<int> categoryIds)
