@@ -4,9 +4,9 @@ using RevitMCPCommandSet.Utils;
 namespace RevitMCPCommandSet.Services
 {
     /// <summary>
-    /// <para>族类型的收集与转换，供 get_available_family_types 使用。</para>
+    /// <para>族类型的收集与转换，供 get_available_family_types 与 list_model_items（kind types）使用。</para>
     /// <para>Collects family types and converts them to FamilyTypeInfo, for
-    /// get_available_family_types.</para>
+    /// get_available_family_types and list_model_items (kind types).</para>
     /// </summary>
     internal static class FamilyTypeCollector
     {
