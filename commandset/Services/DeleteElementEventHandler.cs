@@ -12,6 +12,13 @@ namespace RevitMCPCommandSet.Services
 
         // 成功删除的元素数量
         public int DeletedCount { get; private set; }
+
+        /// <summary>
+        /// <para>失败的原因（如"提交被 Revit 拒绝: ..."），由命令接在"删除元素失败: "之后报告；没有原因时为 null。</para>
+        /// <para>Why it failed (such as "提交被 Revit 拒绝: ..."); the command reports it after
+        /// "删除元素失败: ". Null when there is no reason to give.</para>
+        /// </summary>
+        public string ErrorMessage { get; private set; }
         // 状态同步对象
         public bool TaskCompleted { get; private set; }
         private readonly ManualResetEvent _resetEvent = new ManualResetEvent(false);
@@ -25,6 +32,7 @@ namespace RevitMCPCommandSet.Services
         }
         public void Execute(UIApplication app)
         {
+            ErrorMessage = null;
             try
             {
                 var doc = app.ActiveUIDocument.Document;
@@ -83,6 +91,7 @@ namespace RevitMCPCommandSet.Services
                     if (confirm != TaskDialogResult.Yes)
                     {
                         IsSuccess = false;
+                        ErrorMessage = "用户在确认框中没有选择继续";
                         return;
                     }
 
@@ -122,12 +131,14 @@ namespace RevitMCPCommandSet.Services
                 {
                     TaskDialog.Show("错误", "没有有效的元素可以删除");
                     IsSuccess = false;
+                    ErrorMessage = "没有有效的元素可以删除";
                 }
             }
             catch (Exception ex)
             {
                 TaskDialog.Show("错误", "删除元素失败: " + ex.Message);
                 IsSuccess = false;
+                ErrorMessage = ex.Message;
             }
             finally
             {
