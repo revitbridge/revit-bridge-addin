@@ -5,6 +5,8 @@ namespace revit_mcp_plugin.Configuration
     using Newtonsoft.Json.Linq;
     using System;
     using System.Collections.Generic;
+    using System.Globalization;
+    using System.IO;
 
     /// <summary>
     /// <para>服务设置类</para>
@@ -84,21 +86,39 @@ namespace revit_mcp_plugin.Configuration
 
         /// <summary>
         /// <para>"Allow my tools": user command sets (other folders under Commands\) and
-        /// manage_solidified_tools register/run. Off unless the key is true: a new install,
-        /// a registry from 0.5.0 or older (no key) and a registry that cannot be read all
-        /// start with it off. An absent key stays absent when another setting is saved.</para>
+        /// manage_solidified_tools register/run. An explicit true or false always wins.
+        /// Without the key (a new install, a registry from 0.5.0 or older) it follows the
+        /// mode: on in local mode, off in remote mode. The key stays absent when another
+        /// setting is saved, so a later mode change moves the default with it.</para>
         /// </summary>
         [JsonProperty("localTools", NullValueHandling = NullValueHandling.Ignore)]
         public bool? LocalTools { get; set; }
 
         [JsonIgnore]
-        public bool LocalToolsEnabled => LocalTools == true;
+        public bool LocalToolsEnabled => LocalTools ??
+            !string.Equals(Mode, "websocket", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>True when "Allow my tools" was never set and follows the mode's default.</summary>
+        [JsonIgnore]
+        public bool LocalToolsIsDefault => LocalTools == null;
 
         /// <summary>
         /// <para>Turn the bridge on when Revit starts. Default off.</para>
         /// </summary>
         [JsonProperty("autoStart")]
         public bool AutoStart { get; set; } = false;
+
+        /// <summary>
+        /// <para>The Revit Bridge panel has opened by itself once (on the first switch-on of
+        /// this install); it never opens by itself again for that reason.</para>
+        /// </summary>
+        [JsonProperty("panelShown")]
+        public bool PanelShown { get; set; } = false;
+
+        /// <summary>True when the file had a "token" whose value could not be read as text.</summary>
+        [JsonIgnore]
+        public bool TokenUnreadable =>
+            InvalidFields.Exists(name => string.Equals(name, "token", StringComparison.OrdinalIgnoreCase));
 
         // Only field names are retained, never rejected values (which can be secrets).
         [JsonIgnore]
@@ -114,12 +134,28 @@ namespace revit_mcp_plugin.Configuration
     }
 
     /// <summary>
-    /// Read each setting independently. A bad value must not discard pairing,
+    /// <para>Read each setting independently. A bad value must not discard pairing,
     /// command selections or unrelated valid settings in an older registry.
-    /// Applies to all existing JsonConvert and SettingsStore load paths.
+    /// Applies to all existing JsonConvert and SettingsStore load paths.</para>
+    /// <para>Every value is read the way Json.NET read that property from the whole file
+    /// in 0.5.0 (main): a number or a boolean where text is expected becomes its literal
+    /// text ("token": 12345 is the secret "12345", 1.50 stays "1.50", true is "true"),
+    /// a port may be a numeric string (" 18090 "), and "true"/"false"/1/0 are booleans.
+    /// Only a value 0.5.0 could not read at all (it then dropped the whole file) is
+    /// listed in InvalidFields and left at its default; added checks: port 1 to 65535,
+    /// mode "tcp" or "websocket" (any case).</para>
     /// </summary>
     public sealed class ServiceSettingsConverter : JsonConverter
     {
+        // Per-value reads, as the whole-file read of 0.5.0 did them: no date conversion of
+        // text, decimals so that a number's text keeps its trailing zeros.
+        private static readonly JsonSerializer LiteralSerializer = JsonSerializer.Create(new JsonSerializerSettings
+        {
+            DateParseHandling = DateParseHandling.None,
+            FloatParseHandling = FloatParseHandling.Decimal,
+            Culture = CultureInfo.InvariantCulture,
+        });
+
         public override bool CanConvert(Type objectType) => objectType == typeof(ServiceSettings);
         public override bool CanWrite => false;
 
@@ -128,18 +164,21 @@ namespace revit_mcp_plugin.Configuration
         {
             var result = new ServiceSettings();
             // Credentials and addresses are literal strings, including strings
-            // that look like ISO dates. The default reader otherwise converts
-            // them to Date tokens before per-property validation can see them.
+            // that look like ISO dates or numbers. The default reader otherwise converts
+            // them to Date tokens (and numbers to doubles) before the values are read.
             var previousDateHandling = reader.DateParseHandling;
+            var previousFloatHandling = reader.FloatParseHandling;
             JToken token;
             try
             {
                 reader.DateParseHandling = DateParseHandling.None;
+                reader.FloatParseHandling = FloatParseHandling.Decimal;
                 token = JToken.Load(reader);
             }
             finally
             {
                 reader.DateParseHandling = previousDateHandling;
+                reader.FloatParseHandling = previousFloatHandling;
             }
             if (!(token is JObject settings))
             {
@@ -154,33 +193,33 @@ namespace revit_mcp_plugin.Configuration
                     var value = property.Value;
                     switch (property.Name.ToLowerInvariant())
                     {
-                        case "loglevel": result.LogLevel = ReadString(value); break;
+                        case "loglevel": result.LogLevel = ReadAs<string>(value); break;
                         case "port":
-                            if (value.Type != JTokenType.Integer)
-                                throw new JsonSerializationException("Expected an integer.");
-                            int port = value.Value<int>();
+                            int port = ReadAs<int>(value);
                             if (port < 1 || port > 65535)
                                 throw new JsonSerializationException("Port is out of range.");
                             result.Port = port;
                             break;
                         case "mode":
-                            string mode = ReadString(value);
+                            string mode = ReadAs<string>(value);
                             if (!string.Equals(mode, "tcp", StringComparison.OrdinalIgnoreCase) &&
                                 !string.Equals(mode, "websocket", StringComparison.OrdinalIgnoreCase))
                                 throw new JsonSerializationException("Unknown connection mode.");
                             result.Mode = mode;
                             break;
-                        case "wsurl": result.WsUrl = ReadString(value); break;
-                        case "deviceid": result.DeviceId = ReadString(value); break;
-                        case "token": result.Token = ReadString(value); break;
-                        case "confirmeachrun": result.ConfirmEachRun = ReadBoolean(value); break;
-                        case "allowremotecodeexecution": result.AllowRemoteCodeExecution = ReadBoolean(value); break;
-                        case "localtools": result.LocalTools = ReadBoolean(value); break;
-                        case "autostart": result.AutoStart = ReadBoolean(value); break;
+                        case "wsurl": result.WsUrl = ReadAs<string>(value); break;
+                        case "deviceid": result.DeviceId = ReadAs<string>(value); break;
+                        case "token": result.Token = ReadAs<string>(value); break;
+                        case "confirmeachrun": result.ConfirmEachRun = ReadAs<bool>(value); break;
+                        case "allowremotecodeexecution": result.AllowRemoteCodeExecution = ReadAs<bool>(value); break;
+                        case "localtools": result.LocalTools = ReadAs<bool?>(value); break;
+                        case "autostart": result.AutoStart = ReadAs<bool>(value); break;
+                        case "panelshown": result.PanelShown = ReadAs<bool>(value); break;
                     }
                 }
                 catch (Exception ex) when (ex is JsonException || ex is InvalidCastException ||
-                                           ex is FormatException || ex is OverflowException)
+                                           ex is FormatException || ex is OverflowException ||
+                                           ex is ArgumentException)
                 {
                     result.InvalidFields.Add(property.Name);
                 }
@@ -188,18 +227,14 @@ namespace revit_mcp_plugin.Configuration
             return result;
         }
 
-        private static string ReadString(JToken token)
+        // One value through Json.NET's own reader for that type, from the value's JSON text.
+        private static T ReadAs<T>(JToken value)
         {
-            if (token.Type != JTokenType.String)
-                throw new JsonSerializationException("Expected a string.");
-            return token.Value<string>();
-        }
-
-        private static bool ReadBoolean(JToken token)
-        {
-            if (token.Type != JTokenType.Boolean)
-                throw new JsonSerializationException("Expected a boolean.");
-            return token.Value<bool>();
+            using (var text = new StringReader(value.ToString(Formatting.None)))
+            using (var reader = new JsonTextReader(text))
+            {
+                return LiteralSerializer.Deserialize<T>(reader);
+            }
         }
 
         public override void WriteJson(JsonWriter writer, object value, JsonSerializer serializer)

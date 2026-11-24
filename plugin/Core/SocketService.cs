@@ -30,6 +30,8 @@ namespace revit_mcp_plugin.Core
         private ILogger _logger;
         private volatile string _lastStartError;
         private volatile string _configLoadError;
+        // Why Start must refuse (a "token" that is present but unreadable), or null.
+        private string _startRefusal;
         private CommandExecutor _commandExecutor;
         private string _authToken;
         private bool _tokenWarningLogged;
@@ -93,29 +95,46 @@ namespace revit_mcp_plugin.Core
             configManager.LoadConfiguration();
             _configLoadError = configManager.LoadError;
 
-            // 读取预共享鉴权 token（可选增强，缺失时向后兼容放行）
-            // Read the pre-shared auth token (optional; missing token stays backward compatible).
-            _authToken = configManager.Config?.Settings?.Token;
-            _confirmEachRun = configManager.Config?.Settings?.ConfirmEachRun ?? true;
+            // token、逐次确认、端口
+            // Token, per-run confirmation, port.
+            ApplySettings(configManager.Config?.Settings);
 
             // 确认对话框的外部事件必须在 Revit UI 线程上创建（Initialize 由 Ribbon 点击触发）。
             // The confirmation dialog's external event has to be created on the Revit UI
             // thread; Initialize() runs from the ribbon click.
             ConfirmationPrompt.Initialize();
 
-
-            // 从配置中读取服务端口（缺省仍为字段默认值 18080）
-            // Read the service port from the configuration (defaults to 18080 when unset).
-            if (configManager.Config?.Settings?.Port > 0)
-            {
-                _port = configManager.Config.Settings.Port;
-            }
-
             // 加载命令
             // Load command.
             LoadCommandRegistry(configManager);
 
             _logger.Info($"Socket service initialized on port {_port}");
+        }
+
+        /// <summary>
+        /// <para>Initialize 中与 Revit 无关的一步：token、逐次确认、端口。token 存在却读不出（例如是
+        /// 对象）时记下拒绝原因，Start 不启动——本机端口不能在没有密钥的情况下开放。</para>
+        /// <para>The Revit-free step of Initialize: token, per-run confirmation, port. When a
+        /// "token" is present but cannot be read (an object, say), Start refuses with the
+        /// reason: the local port must not open without its secret.</para>
+        /// </summary>
+        internal void ApplySettings(ServiceSettings settings)
+        {
+            // 读取预共享鉴权 token（可选增强，缺失时向后兼容放行）
+            // Read the pre-shared auth token (optional; missing token stays backward compatible).
+            _authToken = settings?.Token;
+            _confirmEachRun = settings?.ConfirmEachRun ?? true;
+            _startRefusal = settings != null && settings.TokenUnreadable
+                ? "the 'token' in Commands\\commandRegistry.json is not text, so the local bridge would have no secret. " +
+                  "Fix or remove 'token' in that file (or re-run the installer)."
+                : null;
+
+            // 从配置中读取服务端口（缺省仍为字段默认值 18080）
+            // Read the service port from the configuration (defaults to 18080 when unset).
+            if (settings?.Port > 0)
+            {
+                _port = settings.Port;
+            }
         }
 
         /// <summary>
@@ -159,6 +178,13 @@ namespace revit_mcp_plugin.Core
         public void Start()
         {
             if (_isRunning) return;
+
+            if (_startRefusal != null)
+            {
+                _lastStartError = _startRefusal;
+                _logger.Error("Socket 服务拒绝启动 / Socket service refused to start: {0}", _startRefusal);
+                return;
+            }
 
             try
             {

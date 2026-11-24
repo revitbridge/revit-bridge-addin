@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -46,8 +47,9 @@ namespace revit_mcp_plugin.Configuration
         /// <summary>
         /// <para>Like <see cref="Load"/>, but never throws, for the ribbon button and the panel.
         /// A file that cannot be read or parsed gives the defaults (local mode, port 18080,
-        /// "Allow my tools" off, no auto start) and its reason in <paramref name="error"/>;
-        /// the file itself is left as it is. Settings and Commands are never null.</para>
+        /// "Allow my tools" following the local-mode default, which is on, no auto start) and
+        /// its reason in <paramref name="error"/>; the file itself is left as it is. Settings
+        /// and Commands are never null.</para>
         /// </summary>
         public static FrameworkConfig LoadOrDefaults(out string error)
         {
@@ -95,8 +97,9 @@ namespace revit_mcp_plugin.Configuration
         /// 文件顶层本版本不认识的属性原样保留。失败时抛出且文件不变——文件为空、为 null、不是对象或
         /// 不是有效 JSON 时也一样（不会用默认值重写）。</para>
         /// <para>Read the file, change the settings and write it back under one lock. Only
-        /// the fields ServiceSettings knows are written; properties this version does not
-        /// know, in "settings" and at the top level, stay as they are. Throws on failure and
+        /// the settings the change actually changed are written; every other value -
+        /// including one this version could not read, and properties it does not know, in
+        /// "settings" and at the top level - keeps its own JSON value. Throws on failure and
         /// leaves the file unchanged - also when it is empty, "null", not an object or not
         /// valid JSON (it is never rewritten with defaults).</para>
         /// </summary>
@@ -118,6 +121,10 @@ namespace revit_mcp_plugin.Configuration
         /// <para>UpdateSettings 的文本核心：输入原文件内容，返回改过 settings 的新内容。</para>
         /// <para>Text core of <see cref="UpdateSettings"/>: takes the file's text and returns
         /// it with the changed settings merged into its "settings" object.</para>
+        /// <para>Only a setting whose value the change altered is written, into the key as
+        /// the file spells it (keys are read ignoring case). So "token": 12345 stays the
+        /// number 12345 when "localTools" is saved, and a value this version could not read
+        /// ("port": "abc") stays as it is unless the change sets that setting itself.</para>
         /// </summary>
         public static string ApplySettingsChange(string registryJson, Action<ServiceSettings> change, out ServiceSettings written)
         {
@@ -130,9 +137,34 @@ namespace revit_mcp_plugin.Configuration
             }
 
             ServiceSettings current = settings.ToObject<ServiceSettings>() ?? new ServiceSettings();
+            JObject before = JObject.FromObject(current);
             change(current);
-            foreach (JProperty property in JObject.FromObject(current).Properties())
-                settings[property.Name] = property.Value;
+            JObject after = JObject.FromObject(current);
+
+            var names = new List<string>();
+            foreach (JProperty property in before.Properties().Concat(after.Properties()))
+            {
+                if (!names.Contains(property.Name))
+                    names.Add(property.Name);
+            }
+
+            foreach (string name in names)
+            {
+                JToken oldValue = before[name];
+                JToken newValue = after[name];
+                if (JToken.DeepEquals(oldValue, newValue))
+                    continue;
+
+                // The converter reads keys ignoring case and the last one wins.
+                JProperty existing = settings.Properties()
+                    .LastOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
+                if (newValue == null)
+                    existing?.Remove();
+                else if (existing != null)
+                    existing.Value = newValue;
+                else
+                    settings[name] = newValue;
+            }
 
             written = current;
             return root.ToString(Formatting.Indented);
@@ -200,8 +232,13 @@ namespace revit_mcp_plugin.Configuration
             if (string.IsNullOrWhiteSpace(registryJson))
                 throw new InvalidDataException(
                     "commandRegistry.json is empty, so it was left unchanged. Repair it, or re-run the installer to restore it.");
+            // Decimals: a number's text (1.50) is written back as it was, not as 1.5.
             var token = JsonConvert.DeserializeObject<JToken>(registryJson,
-                new JsonSerializerSettings { DateParseHandling = DateParseHandling.None });
+                new JsonSerializerSettings
+                {
+                    DateParseHandling = DateParseHandling.None,
+                    FloatParseHandling = FloatParseHandling.Decimal,
+                });
             var root = token as JObject;
             if (root == null)
                 throw new InvalidDataException(
