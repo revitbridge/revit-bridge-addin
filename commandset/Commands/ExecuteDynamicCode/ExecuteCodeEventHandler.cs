@@ -1,5 +1,6 @@
 using Autodesk.Revit.UI;
 using Newtonsoft.Json;
+using RevitMCPCommandSet.Utils;
 using RevitMCPSDK.API.Interfaces;
 
 namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
@@ -71,10 +72,32 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
                 {
                     transaction.Start();
 
+                    // 提交时 Revit 报的警告与错误由共用的 CommitFailureGuard 处理，不弹失败对话框：
+                    // 警告记下后删除、提交照常；错误记下后静默回滚，不自动解决任何一条。
+                    // Warnings and errors Revit posts at commit go to the shared CommitFailureGuard,
+                    // without a failure dialog: warnings are recorded and deleted and the commit goes
+                    // on; errors are recorded and the transaction rolls back silently, none resolved
+                    // automatically.
+                    CommitFailureGuard guard = CommitFailureGuard.Install(transaction, "send_code_to_revit");
+
                     // 反射调用执行方法
                     var result = CodeExecutor.Execute(outcome, doc, _executionParameters);
 
-                    transaction.Commit();
+                    // 只有 Committed 是提交成功；RolledBack（或其他状态）是失败，错误文字列出记下的错误。
+                    // Only Committed is a successful commit; RolledBack (or any other status) is a
+                    // failure whose text lists the recorded errors.
+                    TransactionStatus status = transaction.Commit();
+                    if (status != TransactionStatus.Committed)
+                    {
+                        ResultInfo.Success = false;
+                        ResultInfo.ErrorMessage = $"执行失败: {CommitFailureReport.RejectionText(guard.Log, status.ToString())}";
+                        ResultInfo.AddCommitFailures(guard.Log, rejected: true);
+                        return;
+                    }
+
+                    // 没有失败时不加任何键，回复与以前逐字节相同。
+                    // Nothing is added when there was no failure, so the reply is byte-identical to before.
+                    ResultInfo.AddCommitFailures(guard.Log, rejected: false);
 
                     ResultInfo.Success = true;
                     ResultInfo.Result = JsonConvert.SerializeObject(result);
@@ -129,5 +152,57 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
         /// </summary>
         [JsonProperty("fingerprint", NullValueHandling = NullValueHandling.Ignore)]
         public string Fingerprint { get; set; }
+
+        /// <summary>
+        /// <para>提交时 Revit 报的警告（已删除，不再显示；最多 50 条、每条最多 20 个 id），按报的顺序。
+        /// 只在有警告或提交被拒时输出；没有失败的回复不含此键。</para>
+        /// <para>Warnings Revit posted at commit (deleted, not shown; at most 50, each with at most
+        /// 20 ids), in the order posted. Present only when there were warnings or the commit was
+        /// rejected; a reply without failures has no such key.</para>
+        /// </summary>
+        [JsonProperty("warnings", NullValueHandling = NullValueHandling.Ignore)]
+        public List<CommitFailureEntry> Warnings { get; set; }
+
+        /// <summary>True when a warning or an element id was left out of warnings; present with warnings.</summary>
+        [JsonProperty("warningsTruncated", NullValueHandling = NullValueHandling.Ignore)]
+        public bool? WarningsTruncated { get; set; }
+
+        /// <summary>
+        /// <para>使 Revit 回滚提交的错误（同样的上限）；只在提交被拒时输出，此时 success 为 false，
+        /// errorMessage 以"执行失败: 提交被 Revit 拒绝: "开头，模型没有改变。</para>
+        /// <para>The errors that made Revit roll the commit back (same limits); present only when the
+        /// commit was rejected: success is then false, errorMessage starts with
+        /// "执行失败: 提交被 Revit 拒绝: " and the model is unchanged.</para>
+        /// </summary>
+        [JsonProperty("errors", NullValueHandling = NullValueHandling.Ignore)]
+        public List<CommitFailureEntry> Errors { get; set; }
+
+        /// <summary>True when an error or an element id was left out of errors; present with errors.</summary>
+        [JsonProperty("errorsTruncated", NullValueHandling = NullValueHandling.Ignore)]
+        public bool? ErrorsTruncated { get; set; }
+
+        /// <summary>
+        /// <para>按提交的记录填 warnings / errors。提交被拒（rejected）时两组都输出（可为空数组）；
+        /// 提交成功时只输出确有条目的组，没有失败就什么也不加。</para>
+        /// <para>Fill warnings / errors from the commit's log. A rejected commit outputs both (possibly
+        /// empty arrays); a successful one only a group that has entries, and nothing when there was
+        /// no failure.</para>
+        /// </summary>
+        internal void AddCommitFailures(CommitFailureLog log, bool rejected)
+        {
+            List<CommitFailureEntry> warnings = CommitFailureReport.Entries(log, false, out bool warningsTruncated);
+            if (rejected || warnings.Count > 0)
+            {
+                Warnings = warnings;
+                WarningsTruncated = warningsTruncated;
+            }
+
+            List<CommitFailureEntry> errors = CommitFailureReport.Entries(log, true, out bool errorsTruncated);
+            if (rejected || errors.Count > 0)
+            {
+                Errors = errors;
+                ErrorsTruncated = errorsTruncated;
+            }
+        }
     }
 }

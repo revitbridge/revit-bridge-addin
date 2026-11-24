@@ -23,15 +23,38 @@ namespace RevitMCPCommandSet.Utils
         public CommitFailureLog Log { get; }
 
         /// <summary>
-        /// <para>装到事务上（开始之后、提交或回滚之前任何时候都可以）：本预处理器、回滚后清除失败。</para>
+        /// <para>新建一个并装到事务上，见 <see cref="InstallOn"/>。</para>
+        /// <para>Create one and install it on the transaction; see <see cref="InstallOn"/>.</para>
+        /// </summary>
+        public static CommitFailureGuard Install(Transaction transaction, string context)
+        {
+            var guard = new CommitFailureGuard(context);
+            guard.InstallOn(transaction);
+            return guard;
+        }
+
+        /// <summary>
+        /// <para>装到事务上（开始之后、提交或回滚之前任何时候都可以）：本预处理器、回滚后清除失败、
+        /// 不强制模态、不推迟小警告框。之后只有 Commit 返回 Committed 才算提交成功。</para>
         /// <para>Install on a transaction (any time after it started and before it is committed or
-        /// rolled back): this preprocessor, clear failures after a rollback.</para>
+        /// rolled back): this preprocessor, clear failures after a rollback, no forced modal handling,
+        /// no delayed mini-warnings. After that only a Commit that returns Committed is a success.</para>
         /// </summary>
         public void InstallOn(Transaction transaction)
         {
             FailureHandlingOptions options = transaction.GetFailureHandlingOptions();
             options.SetFailuresPreprocessor(this);
             options.SetClearAfterRollback(true);
+            // 预处理器已删除每条警告、遇错误就回滚，正常情况下没有可显示的失败。下面两项是第二道防线：
+            // 万一还有要显示的，不用阻塞 Revit 的模态对话框（RevitAPI：SetForcedModalHandling，false
+            // 允许警告用非阻塞的提示），也不把小警告框推迟到设计师的下一个事务（SetDelayedMiniWarnings）。
+            // The preprocessor deletes every warning and rolls back on any error, so normally
+            // nothing is left to show. The next two options are a second line: should anything be
+            // left, it is not a modal dialog that blocks Revit (RevitAPI SetForcedModalHandling:
+            // false allows a non-blocking display of warnings), and the mini-warning is not delayed
+            // into the designer's next transaction (SetDelayedMiniWarnings).
+            options.SetForcedModalHandling(false);
+            options.SetDelayedMiniWarnings(false);
             transaction.SetFailureHandlingOptions(options);
         }
 
