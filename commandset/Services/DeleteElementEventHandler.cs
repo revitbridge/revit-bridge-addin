@@ -91,12 +91,18 @@ namespace RevitMCPCommandSet.Services
                         try
                         {
                             transaction.Start();
+                            // 提交时的警告（如删掉房间边界墙后的"多个房间在同一封闭区域"）记下后删除、
+                            // 错误静默回滚，不弹 Revit 的失败对话框（CommitFailureGuard）。
+                            // Commit-time warnings (such as "Multiple Rooms are in the same enclosed region"
+                            // after deleting a room-bounding wall) recorded and deleted, errors rolled back
+                            // silently, no Revit failure dialog (CommitFailureGuard).
+                            CommitFailureGuard guard = CommitFailureGuard.Install(transaction, "delete_element");
 
                             // 批量删除元素
                             ICollection<ElementId> deletedIds = doc.Delete(elementIdsToDelete);
                             DeletedCount = deletedIds.Count;
 
-                            transaction.Commit();
+                            guard.CommitOrThrow(transaction);
                         }
                         catch
                         {

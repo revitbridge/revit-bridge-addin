@@ -64,6 +64,10 @@ namespace RevitMCPCommandSet.Services.Architecture
                     using (Transaction tx = new Transaction(_doc, "Create Level"))
                     {
                         tx.Start();
+                        // 提交时的警告记下后删除（列入 warnings）、错误静默回滚，不弹 Revit 的失败对话框。
+                        // Commit-time warnings recorded and deleted (listed in warnings), errors rolled back
+                        // silently, no Revit failure dialog (CommitFailureGuard).
+                        CommitFailureGuard guard = CommitFailureGuard.Install(tx, "create_level");
 
                         try
                         {
@@ -159,7 +163,8 @@ namespace RevitMCPCommandSet.Services.Architecture
                                     }
                                 }
 
-                                tx.Commit();
+                                guard.CommitOrThrow(tx);
+                                warnings.AddRange(CommitFailureReport.WarningLines(guard.Log));
 
                                 // Add to existing names set
                                 existingLevelNames.Add(newLevel.Name);
@@ -183,7 +188,10 @@ namespace RevitMCPCommandSet.Services.Architecture
                         }
                         catch (Exception ex)
                         {
-                            tx.RollBack();
+                            // 提交被拒时事务已结束，不能再回滚；拒绝的原因进 warnings。
+                            // A rejected commit has already ended the transaction; its reason goes to warnings.
+                            if (tx.GetStatus() == TransactionStatus.Started)
+                                tx.RollBack();
                             warnings.Add($"Error creating level '{levelInfo.Name}': {ex.Message}");
                         }
                     }

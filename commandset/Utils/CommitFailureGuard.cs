@@ -58,6 +58,22 @@ namespace RevitMCPCommandSet.Utils
             transaction.SetFailureHandlingOptions(options);
         }
 
+        /// <summary>
+        /// <para>提交。Revit 没有提交（状态不是 Committed）时抛 <see cref="CommitRejectedException"/>，
+        /// 消息以"提交被 Revit 拒绝: "开头并列出记下的错误；这时事务已经结束、模型没有改变，
+        /// 调用方的 catch 不要再对它 RollBack（先看 GetStatus() 是否仍是 Started）。</para>
+        /// <para>Commit. When Revit did not commit (status other than Committed) it throws
+        /// <see cref="CommitRejectedException"/>, whose message starts with "提交被 Revit 拒绝: " and
+        /// lists the recorded errors; the transaction has then ended and the model is unchanged, so
+        /// the caller's catch must not roll it back again (check GetStatus() is still Started first).</para>
+        /// </summary>
+        public void CommitOrThrow(Transaction transaction)
+        {
+            TransactionStatus status = transaction.Commit();
+            if (status != TransactionStatus.Committed)
+                throw new CommitRejectedException(CommitFailureReport.RejectionText(Log, status.ToString()));
+        }
+
         public FailureProcessingResult PreprocessFailures(FailuresAccessor failuresAccessor)
         {
             // CommitFailureLog.Process 不抛异常：读失败出错时它记一条错误并选回滚。
@@ -147,6 +163,19 @@ namespace RevitMCPCommandSet.Utils
                     yield return id.GetValue();
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// <para>Revit 没有提交事务（CommitFailureGuard.CommitOrThrow）：事务已结束，模型没有改变。</para>
+    /// <para>Revit did not commit the transaction (CommitFailureGuard.CommitOrThrow): the transaction
+    /// has ended and the model is unchanged.</para>
+    /// </summary>
+    internal sealed class CommitRejectedException : System.InvalidOperationException
+    {
+        public CommitRejectedException(string message)
+            : base(message)
+        {
         }
     }
 }

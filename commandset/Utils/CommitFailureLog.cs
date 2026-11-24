@@ -239,9 +239,9 @@ namespace RevitMCPCommandSet.Utils
     }
 
     /// <summary>
-    /// <para>由 CommitFailureLog 生成回复内容：条目列表（有上限）与提交被拒时的错误文字。</para>
-    /// <para>Reply content built from a CommitFailureLog: capped entry lists and the error text of a
-    /// rejected commit.</para>
+    /// <para>由 CommitFailureLog 生成回复内容：条目列表（有上限）、提交被拒时的错误文字、旧命令消息里的警告行。</para>
+    /// <para>Reply content built from a CommitFailureLog: capped entry lists, the error text of a
+    /// rejected commit, and warning lines for the older commands' messages.</para>
     /// </summary>
     internal static class CommitFailureReport
     {
@@ -253,6 +253,9 @@ namespace RevitMCPCommandSet.Utils
 
         /// <summary>Starts the error text of a commit Revit did not complete, so that a client can tell it apart.</summary>
         public const string RejectedPrefix = "提交被 Revit 拒绝: ";
+
+        /// <summary>Starts each warning line added to an older command's message.</summary>
+        public const string WarningPrefix = "Revit 警告: ";
 
         /// <summary>
         /// <para>按记录顺序取警告（errors 为 false）或错误，最多 50 条、每条最多 20 个 id；
@@ -311,6 +314,20 @@ namespace RevitMCPCommandSet.Utils
             if (truncated)
                 text += "; ...（错误或元素过多，未全部列出）";
             return text;
+        }
+
+        /// <summary>
+        /// <para>旧命令的消息里用的警告行，每条一行；去掉了条目或 id 时最后加一行说明。</para>
+        /// <para>Warning lines for an older command's message, one per warning, and a closing line
+        /// when an entry or an id was left out.</para>
+        /// </summary>
+        public static List<string> WarningLines(CommitFailureLog log)
+        {
+            List<CommitFailureEntry> warnings = Entries(log, false, out bool truncated);
+            var lines = warnings.Select(entry => WarningPrefix + Line(entry)).ToList();
+            if (truncated)
+                lines.Add(WarningPrefix + "...（警告或元素过多，未全部列出）");
+            return lines;
         }
     }
 }

@@ -112,6 +112,10 @@ namespace RevitMCPCommandSet.Services
                     using (Transaction transaction = new Transaction(doc, "创建点状构件"))
                     {
                         transaction.Start();
+                        // 提交时的警告记下后删除（列入 _warnings）、错误静默回滚，不弹 Revit 的失败对话框。
+                        // Commit-time warnings recorded and deleted (listed in _warnings), errors rolled back
+                        // silently, no Revit failure dialog (CommitFailureGuard).
+                        CommitFailureGuard guard = CommitFailureGuard.Install(transaction, "create_point_based_element");
 
                         if (!symbol.IsActive)
                             symbol.Activate();
@@ -212,7 +216,8 @@ namespace RevitMCPCommandSet.Services
                             elementIds.Add(instance.Id.GetIntValue());
                         }
 
-                        transaction.Commit();
+                        guard.CommitOrThrow(transaction);
+                        _warnings.AddRange(CommitFailureReport.WarningLines(guard.Log));
                     }
                 }
                 string message = $"Successfully created {elementIds.Count} element(s).";

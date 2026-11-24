@@ -86,6 +86,10 @@ namespace RevitMCPCommandSet.Services
                 using (Transaction trans = new Transaction(doc, "Create Beam System"))
                 {
                     trans.Start();
+                    // 提交时的警告记下后删除（列入 warnings）、错误静默回滚，不弹 Revit 的失败对话框。
+                    // Commit-time warnings recorded and deleted (listed in warnings), errors rolled back
+                    // silently, no Revit failure dialog (CommitFailureGuard).
+                    CommitFailureGuard guard = CommitFailureGuard.Install(trans, "create_structural_framing_system");
 
                     // 1. Resolve Level - Find nearest existing level to the target elevation (like walls do)
                     Level level = doc.FindNearestLevel(Parameters.Elevation / 304.8);
@@ -174,7 +178,8 @@ namespace RevitMCPCommandSet.Services
                         }
                     }
 
-                    trans.Commit();
+                    guard.CommitOrThrow(trans);
+                    warnings.AddRange(CommitFailureReport.WarningLines(guard.Log));
 
                     // 9. Get member beam IDs
                     ICollection<ElementId> beamIds = beamSystem.GetBeamIds();

@@ -111,6 +111,11 @@ namespace RevitMCPCommandSet.Services
                 throw new Exception($"未支持的操作类型：{setting.Action}");
             }
 
+            // 每个事务都装 CommitFailureGuard：提交时的警告记下后删除、错误静默回滚，不弹 Revit 的失败
+            // 对话框；Revit 没有提交时 CommitOrThrow 抛异常，由 Execute 报告为失败。
+            // Every transaction gets a CommitFailureGuard: commit-time warnings recorded and deleted,
+            // errors rolled back silently, no Revit failure dialog; when Revit did not commit,
+            // CommitOrThrow throws and Execute reports the failure.
             // 根据操作类型执行不同的操作
             switch (action)
             {
@@ -199,9 +204,10 @@ namespace RevitMCPCommandSet.Services
                     using (Transaction trans = new Transaction(doc, "创建剖切框"))
                     {
                         trans.Start();
+                        CommitFailureGuard guard = CommitFailureGuard.Install(trans, "operate_element");
                         targetView.IsSectionBoxActive = true;
                         targetView.SetSectionBox(boundingBox);
-                        trans.Commit();
+                        guard.CommitOrThrow(trans);
                     }
 
                     // 移动到视图中心
@@ -213,8 +219,9 @@ namespace RevitMCPCommandSet.Services
                     using (Transaction trans = new Transaction(doc, "设置元素颜色"))
                     {
                         trans.Start();
+                        CommitFailureGuard guard = CommitFailureGuard.Install(trans, "operate_element");
                         SetElementsColor(doc, elementIds, setting.ColorValue);
-                        trans.Commit();
+                        guard.CommitOrThrow(trans);
                     }
                     // 滚动到这些元素使其可见
                     uidoc.ShowElements(elementIds);
@@ -226,6 +233,7 @@ namespace RevitMCPCommandSet.Services
                     using (Transaction trans = new Transaction(doc, "设置元素透明度"))
                     {
                         trans.Start();
+                        CommitFailureGuard guard = CommitFailureGuard.Install(trans, "operate_element");
 
                         // 创建图形覆盖设置对象
                         OverrideGraphicSettings overrideSettings = new OverrideGraphicSettings();
@@ -242,7 +250,7 @@ namespace RevitMCPCommandSet.Services
                             doc.ActiveView.SetElementOverrides(id, overrideSettings);
                         }
 
-                        trans.Commit();
+                        guard.CommitOrThrow(trans);
                     }
                     return true;
 
@@ -251,8 +259,9 @@ namespace RevitMCPCommandSet.Services
                     using (Transaction trans = new Transaction(doc, "删除元素"))
                     {
                         trans.Start();
+                        CommitFailureGuard guard = CommitFailureGuard.Install(trans, "operate_element");
                         doc.Delete(elementIds);
-                        trans.Commit();
+                        guard.CommitOrThrow(trans);
                     }
                     return true;
 
@@ -261,8 +270,9 @@ namespace RevitMCPCommandSet.Services
                     using (Transaction trans = new Transaction(doc, "隐藏元素"))
                     {
                         trans.Start();
+                        CommitFailureGuard guard = CommitFailureGuard.Install(trans, "operate_element");
                         doc.ActiveView.HideElements(elementIds);
-                        trans.Commit();
+                        guard.CommitOrThrow(trans);
                     }
                     return true;
 
@@ -271,8 +281,9 @@ namespace RevitMCPCommandSet.Services
                     using (Transaction trans = new Transaction(doc, "临时隐藏元素"))
                     {
                         trans.Start();
+                        CommitFailureGuard guard = CommitFailureGuard.Install(trans, "operate_element");
                         doc.ActiveView.HideElementsTemporary(elementIds);
-                        trans.Commit();
+                        guard.CommitOrThrow(trans);
                     }
                     return true;
 
@@ -281,8 +292,9 @@ namespace RevitMCPCommandSet.Services
                     using (Transaction trans = new Transaction(doc, "隔离元素"))
                     {
                         trans.Start();
+                        CommitFailureGuard guard = CommitFailureGuard.Install(trans, "operate_element");
                         doc.ActiveView.IsolateElementsTemporary(elementIds);
-                        trans.Commit();
+                        guard.CommitOrThrow(trans);
                     }
                     return true;
 
@@ -291,8 +303,9 @@ namespace RevitMCPCommandSet.Services
                     using (Transaction trans = new Transaction(doc, "取消隐藏元素"))
                     {
                         trans.Start();
+                        CommitFailureGuard guard = CommitFailureGuard.Install(trans, "operate_element");
                         doc.ActiveView.UnhideElements(elementIds);
-                        trans.Commit();
+                        guard.CommitOrThrow(trans);
                     }
                     return true;
 
@@ -301,8 +314,9 @@ namespace RevitMCPCommandSet.Services
                     using (Transaction trans = new Transaction(doc, "重置隔离"))
                     {
                         trans.Start();
+                        CommitFailureGuard guard = CommitFailureGuard.Install(trans, "operate_element");
                         doc.ActiveView.DisableTemporaryViewMode(TemporaryViewMode.TemporaryHideIsolate);
-                        trans.Commit();
+                        guard.CommitOrThrow(trans);
                     }
                     return true;
 

@@ -9,35 +9,6 @@ using RevitMCPSDK.API.Interfaces;
 namespace RevitMCPCommandSet.Services.Architecture
 {
     /// <summary>
-    /// Failure preprocessor that handles duplicate room number warnings by allowing them to proceed.
-    /// Revit auto-assigns room numbers when creating rooms, which may conflict with existing numbers.
-    /// We handle uniqueness ourselves after creation, so we suppress these warnings.
-    /// </summary>
-    public class DuplicateRoomNumberFailurePreprocessor : IFailuresPreprocessor
-    {
-        public FailureProcessingResult PreprocessFailures(FailuresAccessor failuresAccessor)
-        {
-            IList<FailureMessageAccessor> failures = failuresAccessor.GetFailureMessages();
-
-            foreach (FailureMessageAccessor failure in failures)
-            {
-                // Handle room number duplicate warnings by deleting the warning
-                // This allows the transaction to proceed, and we'll set a unique number afterwards
-                string description = failure.GetDescriptionText();
-                if (description.Contains("Number") ||
-                    description.Contains("number") ||
-                    description.Contains("duplicate") ||
-                    description.Contains("Duplicate"))
-                {
-                    failuresAccessor.DeleteWarning(failure);
-                }
-            }
-
-            return FailureProcessingResult.Continue;
-        }
-    }
-
-    /// <summary>
     /// Event handler for creating rooms in Revit
     /// </summary>
     public class CreateRoomEventHandler : IExternalEventHandler, IWaitableExternalEventHandler
@@ -98,15 +69,15 @@ namespace RevitMCPCommandSet.Services.Architecture
                 {
                     using (Transaction tx = new Transaction(_doc, "Create Room"))
                     {
-                        // Set up failure handling to completely suppress duplicate room number warnings
-                        // Revit auto-assigns numbers which may conflict; we set unique numbers afterwards
-                        FailureHandlingOptions failureOptions = tx.GetFailureHandlingOptions();
-                        failureOptions.SetFailuresPreprocessor(new DuplicateRoomNumberFailurePreprocessor());
-                        failureOptions.SetClearAfterRollback(true);
-                        failureOptions.SetDelayedMiniWarnings(false);
-                        tx.SetFailureHandlingOptions(failureOptions);
-
                         tx.Start();
+                        // 提交时的每条警告（含 Revit 自动编号造成的重号警告）记下后删除、错误静默回滚，
+                        // 不弹 Revit 的失败对话框（CommitFailureGuard）。它取代了按描述文字匹配
+                        // "number"/"duplicate" 只删部分警告的旧预处理器。
+                        // Every commit-time warning (the duplicate-number one Revit's automatic numbering
+                        // causes included) is recorded and deleted, errors roll back silently, no Revit
+                        // failure dialog (CommitFailureGuard). It replaces the former preprocessor that
+                        // deleted only the warnings whose text matched "number"/"duplicate".
+                        CommitFailureGuard guard = CommitFailureGuard.Install(tx, "create_room");
 
                         // Step 1: Find or determine the level
                         Level level = null;
@@ -245,7 +216,7 @@ namespace RevitMCPCommandSet.Services.Architecture
                             }
                         }
 
-                        tx.Commit();
+                        guard.CommitOrThrow(tx);
 
                         // Add to result list
                         createdRooms.Add(new RoomResultInfo
