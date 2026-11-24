@@ -113,6 +113,7 @@ namespace revit_mcp_plugin.Core
         private static volatile string _lastError;
         private static volatile ServiceSettings _settings = new ServiceSettings();
         private static volatile string _settingsError;
+        private static volatile string _settingsProblems;
 
         // A second click this soon after the end of a switch is ignored: the old "started"
         // dialog used to swallow double clicks.
@@ -127,6 +128,7 @@ namespace revit_mcp_plugin.Core
         private static int _reloadRequested;
         private static volatile int _reloadDone;
         private static volatile string _reloadError;
+        private static volatile bool _reloadFoundBridgeOff;
 
         /// <summary>Why the last start did not happen, or null.</summary>
         public static string LastError => _lastError;
@@ -143,6 +145,9 @@ namespace revit_mcp_plugin.Core
 
         /// <summary>Why the settings file could not be read at the last read, or null.</summary>
         public static string SettingsError => _settingsError;
+
+        /// <summary>The settings in a readable file that could not be read (key names), or null.</summary>
+        public static string SettingsProblems => _settingsProblems;
 
         public static bool IsOn => SocketService.Instance.IsRunning || WebSocketService.Instance.IsRunning;
 
@@ -365,7 +370,13 @@ namespace revit_mcp_plugin.Core
 
             service.Initialize(uiApp);
             service.Start(settings.WsUrl, settings.DeviceId);
-            return true;
+            if (service.IsRunning)
+                return true;
+
+            // Refused (the settings file exists but cannot be read).
+            _lastError = "Could not start the remote bridge: " + (service.LastStartError ?? "unknown reason.");
+            ReportFailure(uiApp, origin, _lastError);
+            return false;
         }
 
         // A failed start is reported once: the panel says why (non-modal). From the panel
@@ -529,17 +540,45 @@ namespace revit_mcp_plugin.Core
         }
 
         /// <summary>
-        /// <para>重建请求是否已由 Revit 执行；已执行时给出结果（null 表示成功，否则为原因）。</para>
-        /// <para>Whether Revit has run the reload with this ticket; when it has, its outcome
-        /// (null when rebuilt, else why not).</para>
+        /// <para>重建请求是否已由 Revit 执行；已执行时给出结果（null 表示成功，否则为原因；bridgeOff 表示执行时
+        /// 桥接已经关了，没有可重建的）。</para>
+        /// <para>Whether Revit has run the reload with this ticket; when it has, its outcome:
+        /// null when rebuilt, else why not; bridgeOff when the bridge had been turned off by
+        /// then (nothing to rebuild; the tools load when it is turned on).</para>
         /// </summary>
-        public static bool TryGetReloadResult(int ticket, out string error)
+        public static bool TryGetReloadResult(int ticket, out string error, out bool bridgeOff)
         {
             error = null;
+            bridgeOff = false;
             if (_reloadDone < ticket)
                 return false;
             error = _reloadError;
+            bridgeOff = _reloadFoundBridgeOff;
             return true;
+        }
+
+        // Runs the reload the panel asked for and records its outcome. A refused reload that
+        // was asked to turn user tools on leaves them as the last load applied them (off): the
+        // file says on, the running bridge says off, and the panel says it applies at the
+        // next switch-on. Turning them off never waits for a reload.
+        private static void RunReload(int reloadTarget)
+        {
+            bool bridgeOff = !IsOn;
+            string error = null;
+            try
+            {
+                error = bridgeOff ? null : ReloadCommands();
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                System.Diagnostics.Trace.WriteLine($"revit-bridge: reload failed: {ex}");
+            }
+            if (error != null && UserToolAccess.Allowed && !UserToolAccess.LoadedAllowed)
+                UserToolAccess.Allowed = false;
+            _reloadError = error;
+            _reloadFoundBridgeOff = bridgeOff;
+            _reloadDone = reloadTarget;
         }
 
         /// <summary>The panel saved settings: refresh what the button shows.</summary>
@@ -576,20 +615,14 @@ namespace revit_mcp_plugin.Core
                                 TurnOff();
                             break;
                         case BridgeRequest.ReloadCommands:
-                            _reloadError = ReloadCommands();
-                            _reloadDone = reloadTarget;
+                            RunReload(reloadTarget);
                             break;
                     }
                 }
                 catch (Exception ex)
                 {
-                    if (request == BridgeRequest.ReloadCommands)
-                    {
-                        _reloadError = ex.Message;
-                        _reloadDone = reloadTarget;
-                    }
                     // TurnOn has already put its own reason there.
-                    else if (request != BridgeRequest.TurnOn || _lastError == null)
+                    if (request != BridgeRequest.TurnOn || _lastError == null)
                         _lastError = $"{request} failed: {ex.Message}";
                     System.Diagnostics.Trace.WriteLine($"revit-bridge: {request} failed: {ex}");
                 }
@@ -611,6 +644,7 @@ namespace revit_mcp_plugin.Core
             FrameworkConfig config = SettingsStore.LoadOrDefaults(out error);
             _settings = config.Settings;
             _settingsError = error;
+            _settingsProblems = config.Settings.Problems;
             try
             {
                 SettingsReloaded?.Invoke();
@@ -648,6 +682,7 @@ namespace revit_mcp_plugin.Core
                 MethodCount = localRunning ? tcp.RegisteredMethodCount : remoteRunning ? ws.RegisteredMethodCount : 0,
                 ConfigLoadError = localRunning ? tcp.ConfigLoadError : remoteRunning ? ws.ConfigLoadError : null,
                 SettingsError = _settingsError,
+                SettingsProblems = _settingsProblems,
                 LastError = _lastError,
             };
         }
@@ -733,6 +768,8 @@ namespace revit_mcp_plugin.Core
         public int MethodCount { get; set; }
         public string ConfigLoadError { get; set; }
         public string SettingsError { get; set; }
+        /// <summary>Settings in a readable file that could not be read, or null.</summary>
+        public string SettingsProblems { get; set; }
         public string LastError { get; set; }
 
         public bool IsOn => LocalRunning || RemoteRunning;
@@ -802,6 +839,8 @@ namespace revit_mcp_plugin.Core
                 text.AppendLine($"Warning: {s.ConfigLoadError}, so no commands were loaded.");
             if (!string.IsNullOrWhiteSpace(s.SettingsError))
                 text.AppendLine($"Settings: {s.SettingsError}; the defaults are shown.");
+            else if (!string.IsNullOrWhiteSpace(s.SettingsProblems))
+                text.AppendLine($"Settings: {s.SettingsProblems}.");
             text.Append(s.IsOn
                 ? "Click to turn the bridge off. Shift+click opens the Revit Bridge panel."
                 : "Click to turn the bridge on. Shift+click opens the Revit Bridge panel.");

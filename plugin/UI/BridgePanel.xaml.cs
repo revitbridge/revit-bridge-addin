@@ -25,6 +25,9 @@ namespace revit_mcp_plugin.UI
         private CommandSetSettingsPage _commandSetPage;
         // A reload of the commands this panel asked for and is waiting on (0: none).
         private int _reloadTicket;
+        // Whether the bridge was on when the checkboxes were last shown (they show what the
+        // running bridge enforces while it is on).
+        private bool? _shownWhileOn;
 
         /// <summary>Open the panel, or bring the open one to the front. Revit UI thread.</summary>
         /// <param name="owner">Revit's main window handle (UIApplication.MainWindowHandle).</param>
@@ -81,16 +84,35 @@ namespace revit_mcp_plugin.UI
             _loading = true;
             try
             {
-                MyToolsCheckBox.IsChecked = settings.LocalToolsEnabled;
+                // While the bridge is on the box shows what it enforces; the file's value
+                // applies at the next switch-on when the two differ.
+                bool on = BridgeController.IsOn;
+                bool inFile = settings.LocalToolsEnabled;
+                bool shown = on ? UserToolAccess.Allowed : inFile;
+                _shownWhileOn = on;
+                MyToolsCheckBox.IsChecked = shown;
                 AutoStartCheckBox.IsChecked = settings.AutoStart;
                 bool remote = string.Equals(settings.Mode, "websocket", StringComparison.OrdinalIgnoreCase);
-                MyToolsDefaultText.Text = settings.LocalToolsIsDefault
-                    ? $"Not set yet, so it follows the default for {(remote ? "remote" : "local")} mode: " +
-                      $"{(settings.LocalToolsEnabled ? "on" : "off")}. Ticking or unticking it sets it for good."
-                    : "Set by you; it no longer follows the connection mode.";
+                string fileNote = settings.LocalToolsIsDefault
+                    ? $"the default for {(remote ? "remote" : "local")} mode, {(inFile ? "on" : "off")}"
+                    : (inFile ? "on" : "off");
+                if (shown != inFile)
+                    MyToolsDefaultText.Text = $"The running bridge has it {(shown ? "on" : "off")}; the settings say {fileNote}, " +
+                                              "which applies at the next switch-on.";
+                else if (settings.LocalToolsIsDefault)
+                    MyToolsDefaultText.Text = $"Not set yet, so it follows the default for {(remote ? "remote" : "local")} mode: " +
+                                              $"{(inFile ? "on" : "off")}. Ticking or unticking it sets it for good.";
+                else
+                    MyToolsDefaultText.Text = "Set by you; it no longer follows the connection mode.";
+
+                string problems = error == null ? settings.Problems : null;
+                SettingsProblemsText.Text = problems == null ? "" : problems + ".";
+                SettingsProblemsText.Visibility = problems == null ? Visibility.Collapsed : Visibility.Visible;
+
                 if (error != null)
                     ShowSettingsMessage(error + ". The defaults are shown (local mode, Allow my tools on as the local default, " +
-                                        "no auto start). Repair the file or re-run the installer; until then changes here cannot be saved.",
+                                        "no auto start). Repair the file or re-run the installer; until then changes here cannot be saved " +
+                                        "and the bridge does not turn on.",
                                         isError: true);
             }
             catch (Exception ex)
@@ -112,6 +134,9 @@ namespace revit_mcp_plugin.UI
                                   (BridgeController.HasPendingWork ? " Waiting for Revit to be idle..." : "");
                 SwitchButton.Content = status.IsOn ? "Turn off" : "Turn on";
                 SwitchButton.IsEnabled = BridgeController.CanPost;
+                // The bridge went on or off: the box switches between what it enforces and the file.
+                if (_shownWhileOn != status.IsOn)
+                    ShowSettings(BridgeController.Settings, BridgeController.SettingsError);
                 ReportReloadWhenDone();
             }
             catch (Exception ex)
@@ -194,14 +219,22 @@ namespace revit_mcp_plugin.UI
             if (_reloadTicket <= 0)
                 return;
             string error;
-            if (!BridgeController.TryGetReloadResult(_reloadTicket, out error))
+            bool bridgeOff;
+            if (!BridgeController.TryGetReloadResult(_reloadTicket, out error, out bridgeOff))
                 return;
             _reloadTicket = 0;
+            // The box shows what the running bridge enforces now.
+            ShowSettings(BridgeController.Settings, BridgeController.SettingsError);
 
+            if (bridgeOff)
+            {
+                ShowSettingsMessage("Allow my tools is on. The bridge is off; your tools load when it is turned on.", isError: false);
+                return;
+            }
             if (error != null)
             {
-                ShowSettingsMessage("Allow my tools is saved as on, but the commands could not be reloaded (" + error + "). " +
-                                    "Turn the bridge off and on to load your tools.", isError: true);
+                ShowSettingsMessage("Allow my tools is saved as on, but the running bridge did not reload its commands: " + error + ".",
+                                    isError: true);
                 return;
             }
 

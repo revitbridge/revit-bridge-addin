@@ -35,6 +35,8 @@
             <!-- Auto start -->
             <CheckBox x:Name="AutoStartCheckBox" Content="Turn the bridge on when Revit starts"
                       Checked="AutoStartCheckBox_Changed" Unchecked="AutoStartCheckBox_Changed"/>
+            <TextBlock x:Name="SettingsProblemsText" TextWrapping="Wrap" Margin="0,8,0,0"
+                       Foreground="#B35C00" Visibility="Collapsed"/>
             <TextBlock x:Name="SettingsMessageText" TextWrapping="Wrap" Margin="0,8,0,0"
                        Foreground="#666666" Visibility="Collapsed"/>
 
