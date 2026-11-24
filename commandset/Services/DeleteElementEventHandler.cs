@@ -106,9 +106,12 @@ namespace RevitMCPCommandSet.Services
                         }
                         catch
                         {
-                            // 异常时显式回滚，避免事务处于未结束状态
-                            // Roll back explicitly on error so the transaction is not left open.
-                            if (transaction.HasStarted() && !transaction.HasEnded())
+                            // 异常时显式回滚，避免事务处于未结束状态；提交没有返回 Committed 时事务已不是
+                            // Started（RolledBack 已结束，Pending 不能回滚），不再回滚。
+                            // Roll back explicitly on error so the transaction is not left open. When
+                            // Commit did not return Committed the transaction is no longer Started
+                            // (RolledBack has ended, Pending cannot be rolled back) and is left alone.
+                            if (transaction.GetStatus() == TransactionStatus.Started)
                                 transaction.RollBack();
                             throw;
                         }

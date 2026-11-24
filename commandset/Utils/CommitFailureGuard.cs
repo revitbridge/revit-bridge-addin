@@ -55,19 +55,34 @@ namespace RevitMCPCommandSet.Utils
         }
 
         /// <summary>
-        /// <para>提交。Revit 没有提交（状态不是 Committed）时抛 <see cref="CommitRejectedException"/>，
-        /// 消息以"提交被 Revit 拒绝: "开头并列出记下的错误；这时事务已经结束、模型没有改变，
-        /// 调用方的 catch 不要再对它 RollBack（先看 GetStatus() 是否仍是 Started）。</para>
-        /// <para>Commit. When Revit did not commit (status other than Committed) it throws
-        /// <see cref="CommitRejectedException"/>, whose message starts with "提交被 Revit 拒绝: " and
-        /// lists the recorded errors; the transaction has then ended and the model is unchanged, so
-        /// the caller's catch must not roll it back again (check GetStatus() is still Started first).</para>
+        /// <para>Commit 返回的状态不是 Committed 时的错误文字：RolledBack 是"提交被 Revit 拒绝: "加记下的错误
+        /// （模型没有改变）；其他状态是"提交没有完成: "，不说模型没变（结果未定）。</para>
+        /// <para>Error text for a Commit that did not return Committed: RolledBack gives
+        /// "提交被 Revit 拒绝: " and the recorded errors (the model is unchanged); any other status
+        /// gives "提交没有完成: " and does not claim the model is unchanged (the outcome is open).</para>
+        /// </summary>
+        public static string FailureText(CommitFailureLog log, TransactionStatus status)
+        {
+            return status == TransactionStatus.RolledBack
+                ? CommitFailureReport.RejectionText(log, status.ToString())
+                : CommitFailureReport.UnfinishedText(log, status.ToString());
+        }
+
+        /// <summary>
+        /// <para>提交。Commit 返回的状态不是 Committed 时抛 <see cref="CommitNotCompletedException"/>，
+        /// 消息见 <see cref="FailureText"/>。RolledBack：事务已结束、模型没有改变；其他状态：结果未定。
+        /// 两种情况下事务都不再是 Started，调用方的 catch 只能回滚仍是 Started 的事务。</para>
+        /// <para>Commit. When Commit does not return Committed it throws
+        /// <see cref="CommitNotCompletedException"/> with the message of <see cref="FailureText"/>.
+        /// RolledBack: the transaction has ended and the model is unchanged; any other status: the
+        /// outcome is open. Either way the transaction is no longer Started, so the caller's catch
+        /// must roll back only a transaction whose GetStatus() is still Started.</para>
         /// </summary>
         public void CommitOrThrow(Transaction transaction)
         {
             TransactionStatus status = transaction.Commit();
             if (status != TransactionStatus.Committed)
-                throw new CommitRejectedException(CommitFailureReport.RejectionText(Log, status.ToString()));
+                throw new CommitNotCompletedException(FailureText(Log, status), status == TransactionStatus.RolledBack);
         }
 
         public FailureProcessingResult PreprocessFailures(FailuresAccessor failuresAccessor)
@@ -163,15 +178,21 @@ namespace RevitMCPCommandSet.Utils
     }
 
     /// <summary>
-    /// <para>Revit 没有提交事务（CommitFailureGuard.CommitOrThrow）：事务已结束，模型没有改变。</para>
-    /// <para>Revit did not commit the transaction (CommitFailureGuard.CommitOrThrow): the transaction
-    /// has ended and the model is unchanged.</para>
+    /// <para>Commit 没有返回 Committed（CommitFailureGuard.CommitOrThrow）。RolledBack 为 true：Revit 回滚了事务，
+    /// 模型没有改变；为 false：其他状态，结果未定，模型可能已改变。</para>
+    /// <para>Commit did not return Committed (CommitFailureGuard.CommitOrThrow). RolledBack true:
+    /// Revit rolled the transaction back and the model is unchanged; false: another status, the
+    /// outcome is open and the model may have changed.</para>
     /// </summary>
-    internal sealed class CommitRejectedException : System.InvalidOperationException
+    internal sealed class CommitNotCompletedException : System.InvalidOperationException
     {
-        public CommitRejectedException(string message)
+        public CommitNotCompletedException(string message, bool rolledBack)
             : base(message)
         {
+            RolledBack = rolledBack;
         }
+
+        /// <summary>Revit rolled the transaction back; the model is unchanged.</summary>
+        public bool RolledBack { get; }
     }
 }

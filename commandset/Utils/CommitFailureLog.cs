@@ -251,8 +251,11 @@ namespace RevitMCPCommandSet.Utils
         /// <summary>At most this many element ids per entry.</summary>
         public const int MaxElementIdsPerEntry = 20;
 
-        /// <summary>Starts the error text of a commit Revit did not complete, so that a client can tell it apart.</summary>
+        /// <summary>Starts the error text of a commit Revit rolled back (the model is unchanged), so that a client can tell it apart.</summary>
         public const string RejectedPrefix = "提交被 Revit 拒绝: ";
+
+        /// <summary>Starts the error text of a commit that ended in another status than Committed or RolledBack (the outcome is open).</summary>
+        public const string UnfinishedPrefix = "提交没有完成: ";
 
         /// <summary>Starts each warning line added to an older command's message.</summary>
         public const string WarningPrefix = "Revit 警告: ";
@@ -300,17 +303,38 @@ namespace RevitMCPCommandSet.Utils
         }
 
         /// <summary>
-        /// <para>提交没有完成（status 不是 Committed）时的错误文字：前缀加每条错误；没有记录到错误时说明事务状态。</para>
-        /// <para>Error text for a commit that did not complete (status other than Committed): the
-        /// prefix and every error; with no recorded error, the transaction status.</para>
+        /// <para>Revit 回滚了提交（状态 RolledBack，模型没有改变）时的错误文字：前缀加每条错误；没有记录到
+        /// 错误时说明事务状态。</para>
+        /// <para>Error text for a commit Revit rolled back (status RolledBack, the model is
+        /// unchanged): the prefix and every error; with no recorded error, the transaction status.</para>
         /// </summary>
         public static string RejectionText(CommitFailureLog log, string status)
         {
+            return RejectedPrefix + (ErrorList(log) ?? "事务状态为 " + status + "，没有记录到错误");
+        }
+
+        /// <summary>
+        /// <para>提交以 Committed、RolledBack 以外的状态结束（如 Pending）时的错误文字：不说被拒、不说模型没变，
+        /// 只说状态与"模型可能已改变"，再附记下的错误。</para>
+        /// <para>Error text for a commit that ended in a status other than Committed or RolledBack
+        /// (such as Pending): it claims neither a rejection nor an unchanged model, only the status
+        /// and that the model may have changed, followed by any recorded errors.</para>
+        /// </summary>
+        public static string UnfinishedText(CommitFailureLog log, string status)
+        {
+            string text = UnfinishedPrefix + "事务状态为 " + status + "，模型可能已改变";
+            string errors = ErrorList(log);
+            return errors == null ? text : text + "; 记下的错误: " + errors;
+        }
+
+        // 记下的错误，"; " 分隔，过多时加说明；没有错误时为 null。
+        // The recorded errors, "; "-separated, with a note when some were left out; null when none.
+        private static string ErrorList(CommitFailureLog log)
+        {
             List<CommitFailureEntry> errors = Entries(log, true, out bool truncated);
             if (errors.Count == 0)
-                return RejectedPrefix + "事务状态为 " + status + "，没有记录到错误";
-
-            string text = RejectedPrefix + string.Join("; ", errors.Select(Line));
+                return null;
+            string text = string.Join("; ", errors.Select(Line));
             if (truncated)
                 text += "; ...（错误或元素过多，未全部列出）";
             return text;
