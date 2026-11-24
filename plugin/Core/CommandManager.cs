@@ -75,6 +75,7 @@ namespace revit_mcp_plugin.Core
             ServiceSettings settings = _configManager.Config.Settings ?? new ServiceSettings();
             _userToolsAllowed = settings.LocalToolsEnabled;
             UserToolAccess.Allowed = _userToolsAllowed;
+            UserToolAccess.LoadedAllowed = _userToolsAllowed;
             _logger.Info("Allow my tools: {0}{1}", _userToolsAllowed ? "on" : "off",
                 settings.LocalToolsIsDefault ? " (not set: the default for this mode)" : "");
 
@@ -223,7 +224,9 @@ namespace revit_mcp_plugin.Core
                                 var constructor = type.GetConstructor(new[] { typeof(UIApplication) });
                                 if (registryConstructor != null)
                                 {
-                                    command = (IRevitCommand)registryConstructor.Invoke(new object[] { _uiApplication, _commandRegistry });
+                                    // A read-only view of the registry the running service answers from:
+                                    // right after a reload, and a command cannot register names past the gate.
+                                    command = (IRevitCommand)registryConstructor.Invoke(new object[] { _uiApplication, PublishedRegistryView.Instance });
                                 }
                                 else if (constructor != null)
                                 {
@@ -380,7 +383,9 @@ namespace revit_mcp_plugin.Core
         public const string CapabilitiesField = "user_tools";
 
         private static volatile bool _allowed;
-        private static volatile BridgeCommandRegistry _published;
+        private static volatile bool _loadedAllowed;
+        private static BridgeCommandRegistry _published;
+        private static readonly object PublishLock = new object();
 
         /// <summary>Whether user tools may run now.</summary>
         public static bool Allowed
@@ -389,15 +394,47 @@ namespace revit_mcp_plugin.Core
             set => _allowed = value;
         }
 
+        /// <summary>The switch as the last successful command load applied it.</summary>
+        public static bool LoadedAllowed
+        {
+            get => _loadedAllowed;
+            internal set => _loadedAllowed = value;
+        }
+
+        /// <summary>The registry the running service answers from, or null when it is off.</summary>
+        internal static BridgeCommandRegistry Published
+        {
+            get
+            {
+                lock (PublishLock)
+                {
+                    return _published;
+                }
+            }
+        }
+
         /// <summary>The registry the running service answers from (set when a service swaps one in).</summary>
         internal static void Publish(ICommandRegistry registry)
         {
-            _published = registry as BridgeCommandRegistry;
+            lock (PublishLock)
+            {
+                _published = registry as BridgeCommandRegistry;
+            }
+        }
+
+        /// <summary>A service stopped: forget its registry, unless another one was published since.</summary>
+        internal static void Unpublish(ICommandRegistry registry)
+        {
+            lock (PublishLock)
+            {
+                if (ReferenceEquals(_published, registry))
+                    _published = null;
+            }
         }
 
         /// <summary>User commands the running service's registry holds, sorted.</summary>
         public static IList<string> LoadedUserMethods =>
-            _published?.UserMethods ?? new List<string>();
+            Published?.UserMethods ?? new List<string>();
 
         /// <summary>The "user_tools" object of get_bridge_capabilities.</summary>
         public static JObject Describe()
@@ -523,6 +560,47 @@ namespace revit_mcp_plugin.Core
         {
             command = null;
             return name != null && _official.Contains(name) && TryGetCommand(name, out command);
+        }
+    }
+
+    /// <summary>
+    /// <para>交给命令（例如 get_bridge_capabilities）的注册表：只读，总是指向正在运行的服务所用的那份
+    /// （重载之后也对）。命令调 RegisterCommand / ClearCommands 无效，不能绕过开关登记新名字。</para>
+    /// <para>The registry commands are given (get_bridge_capabilities lists its methods from
+    /// it): read-only, always the one the running service answers from, so it is right after
+    /// a reload too. RegisterCommand and ClearCommands from a command are ignored: a user
+    /// command cannot add names that bypass the "Allow my tools" check.</para>
+    /// </summary>
+    public sealed class PublishedRegistryView : ICommandRegistry
+    {
+        public static readonly PublishedRegistryView Instance = new PublishedRegistryView();
+
+        private PublishedRegistryView()
+        {
+        }
+
+        public void RegisterCommand(IRevitCommand command)
+        {
+            System.Diagnostics.Trace.WriteLine(
+                $"revit-bridge: a command tried to register '{command?.CommandName}' in the read-only registry view; ignored.");
+        }
+
+        public bool TryGetCommand(string commandName, out IRevitCommand command)
+        {
+            command = null;
+            BridgeCommandRegistry current = UserToolAccess.Published;
+            return current != null && current.TryGetCommand(commandName, out command);
+        }
+
+        public void ClearCommands()
+        {
+            System.Diagnostics.Trace.WriteLine("revit-bridge: a command tried to clear the read-only registry view; ignored.");
+        }
+
+        public IEnumerable<string> GetRegisteredCommands()
+        {
+            BridgeCommandRegistry current = UserToolAccess.Published;
+            return current == null ? new string[0] : current.GetRegisteredCommands().ToList();
         }
     }
 

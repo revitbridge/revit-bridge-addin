@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -30,8 +31,12 @@ namespace revit_mcp_plugin.Core
         private ILogger _logger;
         private volatile string _lastStartError;
         private volatile string _configLoadError;
-        // Why Start must refuse (a "token" that is present but unreadable), or null.
+        // Why Start must refuse (a "token" that is present but unreadable, a settings file
+        // that exists but cannot be read), or null.
         private string _startRefusal;
+        // What the running service enforces, read at Initialize; a reload compares the file with it.
+        private ServiceSettings _runningSettings = new ServiceSettings();
+        private bool _startedWithLoadError;
         private CommandExecutor _commandExecutor;
         private string _authToken;
         private bool _tokenWarningLogged;
@@ -93,11 +98,10 @@ namespace revit_mcp_plugin.Core
             // Load configuration and register commands.
             ConfigurationManager configManager = new ConfigurationManager(_logger);
             configManager.LoadConfiguration();
-            _configLoadError = configManager.LoadError;
 
-            // token、逐次确认、端口
-            // Token, per-run confirmation, port.
-            ApplySettings(configManager.Config?.Settings);
+            // 读取结果、token、逐次确认、端口
+            // Load result, token, per-run confirmation, port.
+            ApplyConfiguration(configManager);
 
             // 确认对话框的外部事件必须在 Revit UI 线程上创建（Initialize 由 Ribbon 点击触发）。
             // The confirmation dialog's external event has to be created on the Revit UI
@@ -113,13 +117,55 @@ namespace revit_mcp_plugin.Core
 
         /// <summary>
         /// <para>Initialize 中与 Revit 无关的一步：token、逐次确认、端口。token 存在却读不出（例如是
-        /// 对象）时记下拒绝原因，Start 不启动——本机端口不能在没有密钥的情况下开放。</para>
+        /// 对象）时记下拒绝原因，Start 不启动：本机端口不能在没有密钥的情况下开放。</para>
         /// <para>The Revit-free step of Initialize: token, per-run confirmation, port. When a
         /// "token" is present but cannot be read (an object, say), Start refuses with the
         /// reason: the local port must not open without its secret.</para>
         /// </summary>
+        internal void ApplyConfiguration(ConfigurationManager configManager)
+        {
+            _configLoadError = configManager.LoadError;
+            _startedWithLoadError = configManager.LoadError != null;
+            ApplySettings(configManager.Config?.Settings);
+            // 文件存在却读不出：不开本机端口（读不到 token 就可能在没有密钥时开放）；文件不存在按缺省值启动。
+            // The file exists but cannot be read: the local port does not open (its token, if
+            // any, is unknown). A missing file is a fresh install and starts on the defaults.
+            if (configManager.FileUnreadable)
+                _startRefusal = configManager.LoadError +
+                                ", so the local bridge does not start. Repair the file or re-run the installer.";
+        }
+
+        /// <summary>
+        /// <para>运行中能否按磁盘上的设置重载命令：启动时配置读不出、现在读不出、或与安全有关的设置
+        /// （token、模式、端口、allowRemoteCodeExecution）已变，都拒绝，须关再开。返回 null 表示可以。</para>
+        /// <para>Whether a running service may reload its commands from the settings now on
+        /// disk. Refused when the service started on a configuration it could not read, when
+        /// the file cannot be read now, or when a security-relevant setting (token, mode,
+        /// port, allowRemoteCodeExecution) differs from what the service enforces: the bridge
+        /// must be turned off and on instead. null when the reload may go on.</para>
+        /// </summary>
+        internal string ReloadRefusal(ConfigurationManager now)
+        {
+            return ReloadRefusal(_startedWithLoadError, _runningSettings, now);
+        }
+
+        internal static string ReloadRefusal(bool startedWithLoadError, ServiceSettings running, ConfigurationManager now)
+        {
+            if (startedWithLoadError)
+                return "the bridge was turned on while commandRegistry.json could not be read; turn the bridge off and on to apply the settings";
+            if (now.LoadError != null)
+                return now.LoadError + "; the loaded commands were kept. Repair the file, then turn the bridge off and on";
+            IList<string> changed = ServiceSettings.SecurityDifferences(running, now.Config?.Settings);
+            if (changed.Count > 0)
+                return "settings changed on disk since the bridge was turned on (" + string.Join(", ", changed) +
+                       "); turn the bridge off and on to apply them";
+            return null;
+        }
+
         internal void ApplySettings(ServiceSettings settings)
         {
+            _runningSettings = settings ?? new ServiceSettings();
+
             // 读取预共享鉴权 token（可选增强，缺失时向后兼容放行）
             // Read the pre-shared auth token (optional; missing token stays backward compatible).
             _authToken = settings?.Token;
@@ -154,10 +200,11 @@ namespace revit_mcp_plugin.Core
 
             ConfigurationManager configManager = new ConfigurationManager(_logger);
             configManager.LoadConfiguration();
-            if (configManager.LoadError != null)
+            string refusal = ReloadRefusal(configManager);
+            if (refusal != null)
             {
-                _logger.Warning("配置读不出，保留已加载的命令 / Configuration unreadable; kept the loaded commands: {0}", configManager.LoadError);
-                return configManager.LoadError;
+                _logger.Warning("未重载命令，保留已加载的命令 / Commands not reloaded; kept the loaded ones: {0}", refusal);
+                return refusal;
             }
             _configLoadError = null;
             LoadCommandRegistry(configManager, _commandRegistry as BridgeCommandRegistry);
@@ -192,6 +239,7 @@ namespace revit_mcp_plugin.Core
             if (_startRefusal != null)
             {
                 _lastStartError = _startRefusal;
+                UserToolAccess.Unpublish(_commandRegistry);
                 _logger.Error("Socket 服务拒绝启动 / Socket service refused to start: {0}", _startRefusal);
                 return;
             }
@@ -223,6 +271,7 @@ namespace revit_mcp_plugin.Core
                     _logger.Debug("Socket 监听器清理失败 / Could not clean up the listener: {0}", stopEx.Message);
                 }
                 _listener = null;
+                UserToolAccess.Unpublish(_commandRegistry);
                 _lastStartError = DescribeStartFailure(ex, _port);
                 _logger.Error("Socket 服务启动失败 / Failed to start socket service: {0}", ex.Message);
             }
@@ -257,6 +306,8 @@ namespace revit_mcp_plugin.Core
             try
             {
                 _isRunning = false;
+                // Stopped: user_tools and the commands' registry view no longer show this registry.
+                UserToolAccess.Unpublish(_commandRegistry);
 
                 _listener?.Stop();
                 _listener = null;
