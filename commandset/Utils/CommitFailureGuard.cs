@@ -34,27 +34,23 @@ namespace RevitMCPCommandSet.Utils
         }
 
         /// <summary>
-        /// <para>装到事务上（开始之后、提交或回滚之前任何时候都可以）：本预处理器、回滚后清除失败、
-        /// 不强制模态、不推迟小警告框。之后只有 Commit 返回 Committed 才算提交成功。</para>
+        /// <para>装到事务上（开始之后、提交或回滚之前任何时候都可以）：本预处理器、回滚后清除失败。
+        /// 这正是 2026-11-12 真机验过的试跑配置；其余选项保持默认（强制模态）：预处理器已删除每条警告、
+        /// 遇错误就回滚，正常情况下没有可显示的失败，而非模态处理会让 Commit 返回 Pending、结果未定。
+        /// 之后只有 Commit 返回 Committed 才算提交成功。</para>
         /// <para>Install on a transaction (any time after it started and before it is committed or
-        /// rolled back): this preprocessor, clear failures after a rollback, no forced modal handling,
-        /// no delayed mini-warnings. After that only a Commit that returns Committed is a success.</para>
+        /// rolled back): this preprocessor and clear failures after a rollback. That is the dry-run
+        /// setup verified in a real Revit on 2026-11-12; the other options keep their defaults
+        /// (forced modal handling): the preprocessor deletes every warning and rolls back on any
+        /// error, so normally nothing is left to show, while modeless handling could make Commit
+        /// return Pending with the outcome still open. After that only a Commit that returns
+        /// Committed is a success.</para>
         /// </summary>
         public void InstallOn(Transaction transaction)
         {
             FailureHandlingOptions options = transaction.GetFailureHandlingOptions();
             options.SetFailuresPreprocessor(this);
             options.SetClearAfterRollback(true);
-            // 预处理器已删除每条警告、遇错误就回滚，正常情况下没有可显示的失败。下面两项是第二道防线：
-            // 万一还有要显示的，不用阻塞 Revit 的模态对话框（RevitAPI：SetForcedModalHandling，false
-            // 允许警告用非阻塞的提示），也不把小警告框推迟到设计师的下一个事务（SetDelayedMiniWarnings）。
-            // The preprocessor deletes every warning and rolls back on any error, so normally
-            // nothing is left to show. The next two options are a second line: should anything be
-            // left, it is not a modal dialog that blocks Revit (RevitAPI SetForcedModalHandling:
-            // false allows a non-blocking display of warnings), and the mini-warning is not delayed
-            // into the designer's next transaction (SetDelayedMiniWarnings).
-            options.SetForcedModalHandling(false);
-            options.SetDelayedMiniWarnings(false);
             transaction.SetFailureHandlingOptions(options);
         }
 
