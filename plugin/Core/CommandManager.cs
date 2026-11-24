@@ -27,10 +27,10 @@ namespace revit_mcp_plugin.Core
         private string _currentVersion;
         private bool _userToolsAllowed;
 
-        // User commands registered by this load, and configured user commands this load
-        // skipped because "Allow my tools" is off. Published to UserToolAccess at the end.
-        private readonly List<string> _loadedUserMethods = new List<string>();
-        private readonly List<string> _blockedUserMethods = new List<string>();
+        // The registry being filled, when it can record which methods are user tools, and
+        // the registry a reload replaces (its official instances are kept).
+        private readonly BridgeCommandRegistry _bridgeRegistry;
+        private readonly BridgeCommandRegistry _reuseFrom;
 
         /// <summary>
         /// Manager in charge of loading and managing commands.
@@ -39,13 +39,21 @@ namespace revit_mcp_plugin.Core
         /// <param name="logger"></param>
         /// <param name="configManager"></param>
         /// <param name="uiApplication"></param>
+        /// <param name="reuseFrom">
+        /// <para>重载时被替换的注册表：官方命令沿用其中的实例（各自的忙标志与外部事件），不再新建。</para>
+        /// <para>On a reload, the registry being replaced: official commands keep their
+        /// instances from it (their busy guards and external events) instead of new ones.</para>
+        /// </param>
         public CommandManager(
             ICommandRegistry commandRegistry,
             ILogger logger,
             ConfigurationManager configManager,
-            UIApplication uiApplication)
+            UIApplication uiApplication,
+            BridgeCommandRegistry reuseFrom = null)
         {
             _commandRegistry = commandRegistry;
+            _bridgeRegistry = commandRegistry as BridgeCommandRegistry;
+            _reuseFrom = reuseFrom;
             _logger = logger;
             _configManager = configManager;
             _uiApplication = uiApplication;
@@ -64,11 +72,11 @@ namespace revit_mcp_plugin.Core
             _logger.Info("当前 Revit 版本: {0}\nCurrent Revit version: {0}", currentVersion);
 
             // "Allow my tools" as the configuration says now; the services check it per request.
-            _userToolsAllowed = (_configManager.Config.Settings ?? new ServiceSettings()).LocalToolsEnabled;
+            ServiceSettings settings = _configManager.Config.Settings ?? new ServiceSettings();
+            _userToolsAllowed = settings.LocalToolsEnabled;
             UserToolAccess.Allowed = _userToolsAllowed;
-            _loadedUserMethods.Clear();
-            _blockedUserMethods.Clear();
-            _logger.Info("Allow my tools: {0}", _userToolsAllowed ? "on" : "off");
+            _logger.Info("Allow my tools: {0}{1}", _userToolsAllowed ? "on" : "off",
+                settings.LocalToolsIsDefault ? " (not set: the default for this mode)" : "");
 
             // 从配置加载外部命令
             // Load external commands from the configuration file.
@@ -117,7 +125,6 @@ namespace revit_mcp_plugin.Core
                 }
             }
 
-            UserToolAccess.SetLoadedCommands(_loadedUserMethods, _blockedUserMethods);
             _logger.Info("命令加载完成\nCommand loading complete.");
         }
 
@@ -146,24 +153,35 @@ namespace revit_mcp_plugin.Core
                 // The official command set is recognised by the assembly path in the install
                 // folder, never by a name.
                 bool official = IsOfficialAssembly(assemblyPath, _currentVersion);
-                if (!official && _configManager.Config.Commands.Any(candidate =>
-                    IsOfficialCommand(candidate, config.CommandName)))
+                bool shadowsOfficial = !official && _configManager.Config.Commands.Any(candidate =>
+                    IsOfficialCommand(candidate, config.CommandName));
+                switch (DecideLoad(official, shadowsOfficial, File.Exists(assemblyPath), _userToolsAllowed))
                 {
-                    _logger.Warning("User command {0} cannot replace an installed official command.", config.CommandName);
-                    return;
-                }
-                if (!official && !_userToolsAllowed)
-                {
-                    // Not loaded at all; a request for it is answered with UserToolAccess.ErrorCode.
-                    _blockedUserMethods.Add(config.CommandName);
-                    _logger.Info("Allow my tools is off; skipped user command {0} from {1}.",
-                        config.CommandName, Path.GetFileName(assemblyPath));
-                    return;
+                    case LoadDecision.SkipShadowing:
+                        _logger.Warning("User command {0} cannot replace an installed official command.", config.CommandName);
+                        return;
+                    case LoadDecision.SkipMissing:
+                        // Not loaded and not recorded: a request for it is "method not found", whatever the switch.
+                        _logger.Error("命令程序集不存在: {0}\nCommand assembly does not exist: {0}", assemblyPath);
+                        return;
+                    case LoadDecision.Block:
+                        // Not loaded at all; a request for it is answered with UserToolAccess.ErrorCode.
+                        _bridgeRegistry?.AddBlocked(config.CommandName);
+                        _logger.Info("Allow my tools is off; skipped user command {0} from {1}.",
+                            config.CommandName, Path.GetFileName(assemblyPath));
+                        return;
                 }
 
-                if (!File.Exists(assemblyPath))
+                // 重载时沿用已有的官方命令实例；用户命令在本次 Revit 会话中只创建一次。
+                // A reload keeps the official instances it already has; a user command is created
+                // (and its Initialize called) once per Revit session and reused afterwards.
+                IRevitCommand existing = official
+                    ? (_reuseFrom != null && _reuseFrom.TryGetOfficial(config.CommandName, out var kept) ? kept : null)
+                    : UserCommandCache.Find(assemblyPath, config.CommandName);
+                if (existing != null)
                 {
-                    _logger.Error("命令程序集不存在: {0}\nCommand assembly does not exist: {0}", assemblyPath);
+                    Register(existing, official);
+                    _logger.Info("沿用已加载的命令 [{0}]\nKept the loaded command [{0}].", config.CommandName);
                     return;
                 }
 
@@ -227,9 +245,9 @@ namespace revit_mcp_plugin.Core
                                 // user commands loaded (an added "user_tools" field).
                                 if (official && command.CommandName == UserToolAccess.CapabilitiesMethod)
                                     command = new CapabilitiesWithUserTools(command);
-                                _commandRegistry.RegisterCommand(command);
                                 if (!official)
-                                    _loadedUserMethods.Add(command.CommandName);
+                                    UserCommandCache.Remember(assemblyPath, command);
+                                Register(command, official);
                                 _logger.Info("成功注册命令 [{0}] 来自 {1}\nRegistered command [{0}] from {1}",
                                     command.CommandName, Path.GetFileName(assemblyPath));
                                 break; // 找到匹配的命令后退出循环 - Exit the loop after finding a matching command.
@@ -246,6 +264,43 @@ namespace revit_mcp_plugin.Core
             {
                 _logger.Error("加载命令程序集失败: {0}\nFailed to load command assembly: {0}", ex.Message);
             }
+        }
+
+        private void Register(IRevitCommand command, bool official)
+        {
+            if (_bridgeRegistry == null)
+                _commandRegistry.RegisterCommand(command);
+            else if (official)
+                _bridgeRegistry.AddOfficial(command);
+            else
+                _bridgeRegistry.AddUser(command);
+        }
+
+        internal enum LoadDecision
+        {
+            Load,
+            SkipShadowing,
+            SkipMissing,
+            Block,
+        }
+
+        /// <summary>
+        /// <para>一条已启用命令的去向。用户命令：与官方同名则跳过；文件不存在则跳过（"找不到方法"）；
+        /// "允许接入我的工具"关则记为被拦（-32002）；否则加载。</para>
+        /// <para>What happens to one enabled entry. A user entry with an official method name
+        /// is skipped; a missing DLL is skipped and not recorded ("method not found" whatever
+        /// the switch); with "Allow my tools" off an existing user DLL is recorded as blocked
+        /// (-32002); everything else loads.</para>
+        /// </summary>
+        internal static LoadDecision DecideLoad(bool official, bool shadowsOfficial, bool assemblyExists, bool userToolsAllowed)
+        {
+            if (official)
+                return assemblyExists ? LoadDecision.Load : LoadDecision.SkipMissing;
+            if (shadowsOfficial)
+                return LoadDecision.SkipShadowing;
+            if (!assemblyExists)
+                return LoadDecision.SkipMissing;
+            return userToolsAllowed ? LoadDecision.Load : LoadDecision.Block;
         }
 
         private bool IsOfficialCommand(CommandConfig candidate, string commandName)
@@ -308,7 +363,10 @@ namespace revit_mcp_plugin.Core
     /// manage_solidified_tools "register" and "run". Everything else - every official
     /// method, and manage_solidified_tools "list" and "delete" - is unchanged.
     /// When on, nothing is refused here.</para>
-    /// <para>State lives in memory: CommandManager sets it on every (re)load from the
+    /// <para>Which methods are user tools is read from the same registry snapshot the
+    /// service looked the method up in (<see cref="BridgeCommandRegistry"/>), so a reload
+    /// between the lookup and this check cannot let a user method through. Only the switch
+    /// itself is shared state: CommandManager sets it on every (re)load from the
     /// configuration, the Revit Bridge panel sets <see cref="Allowed"/> when the checkbox
     /// changes. Read on socket threads, written on the Revit UI thread.</para>
     /// </summary>
@@ -322,8 +380,7 @@ namespace revit_mcp_plugin.Core
         public const string CapabilitiesField = "user_tools";
 
         private static volatile bool _allowed;
-        private static volatile HashSet<string> _loaded = new HashSet<string>(StringComparer.Ordinal);
-        private static volatile HashSet<string> _blocked = new HashSet<string>(StringComparer.Ordinal);
+        private static volatile BridgeCommandRegistry _published;
 
         /// <summary>Whether user tools may run now.</summary>
         public static bool Allowed
@@ -332,16 +389,15 @@ namespace revit_mcp_plugin.Core
             set => _allowed = value;
         }
 
-        /// <summary>User commands the current registry holds, sorted.</summary>
-        public static IList<string> LoadedUserMethods =>
-            _loaded.OrderBy(name => name, StringComparer.Ordinal).ToList();
-
-        internal static void SetLoadedCommands(IEnumerable<string> loaded, IEnumerable<string> blocked)
+        /// <summary>The registry the running service answers from (set when a service swaps one in).</summary>
+        internal static void Publish(ICommandRegistry registry)
         {
-            // New sets each time: a socket thread reading the old one is never disturbed.
-            _loaded = new HashSet<string>(loaded.Where(name => name != null), StringComparer.Ordinal);
-            _blocked = new HashSet<string>(blocked.Where(name => name != null), StringComparer.Ordinal);
+            _published = registry as BridgeCommandRegistry;
         }
+
+        /// <summary>User commands the running service's registry holds, sorted.</summary>
+        public static IList<string> LoadedUserMethods =>
+            _published?.UserMethods ?? new List<string>();
 
         /// <summary>The "user_tools" object of get_bridge_capabilities.</summary>
         public static JObject Describe()
@@ -355,22 +411,25 @@ namespace revit_mcp_plugin.Core
 
         /// <summary>
         /// <para>For a method the registry has: null when the request may go on, else the
-        /// error message. <paramref name="parameters"/> is read only for
-        /// manage_solidified_tools while user tools are off.</para>
+        /// error message. <paramref name="registry"/> is the snapshot the method was found in;
+        /// <paramref name="parameters"/> is read only for manage_solidified_tools while user
+        /// tools are off.</para>
         /// </summary>
-        public static string RefusalFor(string method, Func<JObject> parameters)
+        public static string RefusalFor(ICommandRegistry registry, string method, Func<JObject> parameters)
         {
-            return Decide(method, parameters, _allowed, _loaded, _blocked, registered: true);
+            var snapshot = registry as BridgeCommandRegistry;
+            return Decide(method, parameters, _allowed, snapshot?.UserMethodSet, snapshot?.BlockedMethodSet, registered: true);
         }
 
         /// <summary>
-        /// <para>For a method the registry does not have: a user command that was not loaded
-        /// because user tools are off gets the error message; anything else null (the caller
-        /// answers "method not found" as before).</para>
+        /// <para>For a method the registry snapshot does not have: a user command that was not
+        /// loaded because user tools are off gets the error message; anything else null (the
+        /// caller answers "method not found" as before).</para>
         /// </summary>
-        public static string RefusalForMissing(string method)
+        public static string RefusalForMissing(ICommandRegistry registry, string method)
         {
-            return Decide(method, null, _allowed, _loaded, _blocked, registered: false);
+            var snapshot = registry as BridgeCommandRegistry;
+            return Decide(method, null, _allowed, snapshot?.UserMethodSet, snapshot?.BlockedMethodSet, registered: false);
         }
 
         /// <summary>The decision itself, without shared state (offline checks call it).</summary>
@@ -412,6 +471,92 @@ namespace revit_mcp_plugin.Core
 
             string dispatched = action.ToLower(CultureInfo.CurrentCulture);
             return dispatched == "register" || dispatched == "run";
+        }
+    }
+
+    /// <summary>
+    /// <para>服务应答所用的注册表，并记下其中哪些方法是用户工具、哪些用户工具因开关关闭而未加载。
+    /// 由 CommandManager 填好后才交给服务，之后不再改动，请求线程无需加锁即可读取。</para>
+    /// <para>The registry a service answers from, plus which of its methods are user tools
+    /// and which configured user tools were not loaded because "Allow my tools" is off.
+    /// CommandManager fills it before the service publishes it; it never changes afterwards,
+    /// so request threads read it without locks.</para>
+    /// </summary>
+    public sealed class BridgeCommandRegistry : RevitCommandRegistry
+    {
+        private readonly HashSet<string> _official = new HashSet<string>(StringComparer.Ordinal);
+        private readonly HashSet<string> _user = new HashSet<string>(StringComparer.Ordinal);
+        private readonly HashSet<string> _blocked = new HashSet<string>(StringComparer.Ordinal);
+
+        internal void AddOfficial(IRevitCommand command)
+        {
+            RegisterCommand(command);
+            _official.Add(command.CommandName);
+            _user.Remove(command.CommandName);
+        }
+
+        internal void AddUser(IRevitCommand command)
+        {
+            RegisterCommand(command);
+            _user.Add(command.CommandName);
+        }
+
+        internal void AddBlocked(string commandName)
+        {
+            if (commandName != null)
+                _blocked.Add(commandName);
+        }
+
+        public bool IsUserMethod(string name) => name != null && _user.Contains(name);
+
+        public bool IsBlockedUserMethod(string name) => name != null && _blocked.Contains(name);
+
+        internal ICollection<string> UserMethodSet => _user;
+
+        internal ICollection<string> BlockedMethodSet => _blocked;
+
+        /// <summary>The user commands this registry answers, sorted.</summary>
+        public IList<string> UserMethods => _user.OrderBy(name => name, StringComparer.Ordinal).ToList();
+
+        /// <summary>An official command instance of this registry, for a reload to keep.</summary>
+        public bool TryGetOfficial(string name, out IRevitCommand command)
+        {
+            command = null;
+            return name != null && _official.Contains(name) && TryGetCommand(name, out command);
+        }
+    }
+
+    /// <summary>
+    /// <para>用户命令实例在一次 Revit 会话中只创建一次（构造函数与 Initialize 只调用一次），之后的加载
+    /// 沿用同一实例：取消再勾选"允许接入我的工具"或关再开桥接，不会对同一程序集再次初始化。</para>
+    /// <para>A user command instance is created once per Revit session (its constructor and
+    /// Initialize run once); later loads reuse it, so unticking and ticking "Allow my tools"
+    /// again, or switching the bridge off and on, never initialises the same assembly twice.
+    /// Revit UI thread only; locked anyway.</para>
+    /// </summary>
+    internal static class UserCommandCache
+    {
+        private static readonly object CacheLock = new object();
+        private static readonly Dictionary<string, IRevitCommand> Instances =
+            new Dictionary<string, IRevitCommand>(StringComparer.Ordinal);
+
+        private static string Key(string assemblyPath, string commandName) =>
+            assemblyPath.ToUpperInvariant() + "|" + commandName;
+
+        internal static IRevitCommand Find(string assemblyPath, string commandName)
+        {
+            lock (CacheLock)
+            {
+                return Instances.TryGetValue(Key(assemblyPath, commandName), out var command) ? command : null;
+            }
+        }
+
+        internal static void Remember(string assemblyPath, IRevitCommand command)
+        {
+            lock (CacheLock)
+            {
+                Instances[Key(assemblyPath, command.CommandName)] = command;
+            }
         }
     }
 }

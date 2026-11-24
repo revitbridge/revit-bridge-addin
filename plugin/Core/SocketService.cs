@@ -49,7 +49,7 @@ namespace revit_mcp_plugin.Core
 
         private SocketService()
         {
-            _commandRegistry = new RevitCommandRegistry();
+            _commandRegistry = new BridgeCommandRegistry();
             _logger = new Logger();
         }
 
@@ -106,7 +106,7 @@ namespace revit_mcp_plugin.Core
 
             // 加载命令
             // Load command.
-            LoadCommandRegistry(configManager);
+            LoadCommandRegistry(configManager, null);
 
             _logger.Info($"Socket service initialized on port {_port}");
         }
@@ -138,32 +138,42 @@ namespace revit_mcp_plugin.Core
         }
 
         /// <summary>
-        /// <para>重新读配置、重建命令注册表（"允许接入我的工具"切换后）。端口、token、
-        /// 逐次确认仍是启动时的值。须在 Revit API 上下文中调用（命令的构造函数会创建外部事件）。</para>
+        /// <para>重新读配置、重建命令注册表（"允许接入我的工具"切换后）：官方命令沿用现有实例，只增减用户命令。
+        /// 端口、token、逐次确认仍是启动时的值。配置读不出时保留现有注册表。须在 Revit API 上下文中调用。</para>
         /// <para>Read the configuration again and rebuild the command registry (after
-        /// "Allow my tools" changed). Port, token and per-run confirmation keep their values
-        /// from the start. Call in a Revit API context: command constructors create external
+        /// "Allow my tools" changed): official commands keep their instances, only user
+        /// commands are added or dropped. Port, token and per-run confirmation keep their
+        /// values from the start. When the configuration cannot be read the current registry
+        /// stays. Call in a Revit API context: a new command's constructor creates external
         /// events.</para>
         /// </summary>
-        public void ReloadCommands()
+        /// <returns>null when reloaded, else why not.</returns>
+        public string ReloadCommands()
         {
-            if (_uiApp == null) return;
+            if (_uiApp == null) return "the bridge has not been started in this Revit session";
 
             ConfigurationManager configManager = new ConfigurationManager(_logger);
             configManager.LoadConfiguration();
-            _configLoadError = configManager.LoadError;
-            LoadCommandRegistry(configManager);
+            if (configManager.LoadError != null)
+            {
+                _logger.Warning("配置读不出，保留已加载的命令 / Configuration unreadable; kept the loaded commands: {0}", configManager.LoadError);
+                return configManager.LoadError;
+            }
+            _configLoadError = null;
+            LoadCommandRegistry(configManager, _commandRegistry as BridgeCommandRegistry);
             _logger.Info("Socket service commands reloaded");
+            return null;
         }
 
-        private void LoadCommandRegistry(ConfigurationManager configManager)
+        private void LoadCommandRegistry(ConfigurationManager configManager, BridgeCommandRegistry reuseFrom)
         {
-            var registry = new RevitCommandRegistry();
+            var registry = new BridgeCommandRegistry();
             CommandManager commandManager = new CommandManager(
-                registry, _logger, configManager, _uiApp);
+                registry, _logger, configManager, _uiApp, reuseFrom);
             commandManager.LoadCommands();
 
             _commandRegistry = registry;
+            UserToolAccess.Publish(registry);
             // 创建命令执行器
             // Create CommandExecutor
             _commandExecutor = new CommandExecutor(registry, _logger);
@@ -415,7 +425,7 @@ namespace revit_mcp_plugin.Core
                     // 因"允许接入我的工具"关闭而没有加载的用户命令：明确拒绝，而不是"找不到"。
                     // A user command not loaded because "Allow my tools" is off: say so
                     // instead of "not found".
-                    string notLoaded = UserToolAccess.RefusalForMissing(request.Method);
+                    string notLoaded = UserToolAccess.RefusalForMissing(registry, request.Method);
                     if (notLoaded != null)
                     {
                         _logger.Warning("已拒绝用户工具 {0}（允许接入我的工具：关）\nRefused user tool {0} (Allow my tools: off).", request.Method);
@@ -428,7 +438,8 @@ namespace revit_mcp_plugin.Core
                 // "允许接入我的工具"关闭时，用户命令与固化工具的登记、运行在服务端拒绝。
                 // With "Allow my tools" off, user commands and solidified-tool register/run
                 // are refused here, before any prompt or command runs.
-                string refusal = UserToolAccess.RefusalFor(request.Method, request.GetParamsObject);
+                // Decided from the same registry snapshot the method was looked up in.
+                string refusal = UserToolAccess.RefusalFor(registry, request.Method, request.GetParamsObject);
                 if (refusal != null)
                 {
                     _logger.Warning("已拒绝用户工具 {0}（允许接入我的工具：关）\nRefused user tool {0} (Allow my tools: off).", request.Method);

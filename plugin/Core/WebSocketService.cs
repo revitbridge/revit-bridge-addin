@@ -90,7 +90,7 @@ namespace revit_mcp_plugin.Core
 
         private WebSocketService()
         {
-            _commandRegistry = new RevitCommandRegistry();
+            _commandRegistry = new BridgeCommandRegistry();
             _logger = new Logger();
         }
 
@@ -164,35 +164,45 @@ namespace revit_mcp_plugin.Core
             // thread; Initialize() runs from the ribbon click.
             ConfirmationPrompt.Initialize();
 
-            LoadCommandRegistry(configManager);
+            LoadCommandRegistry(configManager, null);
 
             _logger.Info("WebSocket service initialized, commands loaded");
         }
 
         /// <summary>
         /// <para>Read the configuration again and rebuild the command registry (after
-        /// "Allow my tools" changed). Token, allowRemoteCodeExecution and per-run confirmation
-        /// keep their values from the start. Call in a Revit API context.</para>
+        /// "Allow my tools" changed): official commands keep their instances, only user
+        /// commands are added or dropped. Token, allowRemoteCodeExecution and per-run
+        /// confirmation keep their values from the start. When the configuration cannot be
+        /// read the current registry stays. Call in a Revit API context.</para>
         /// </summary>
-        public void ReloadCommands()
+        /// <returns>null when reloaded, else why not.</returns>
+        public string ReloadCommands()
         {
-            if (_uiApp == null) return;
+            if (_uiApp == null) return "the bridge has not been started in this Revit session";
 
             ConfigurationManager configManager = new ConfigurationManager(_logger);
             configManager.LoadConfiguration();
-            _configLoadError = configManager.LoadError;
-            LoadCommandRegistry(configManager);
+            if (configManager.LoadError != null)
+            {
+                _logger.Warning("配置读不出，保留已加载的命令 / Configuration unreadable; kept the loaded commands: {0}", configManager.LoadError);
+                return configManager.LoadError;
+            }
+            _configLoadError = null;
+            LoadCommandRegistry(configManager, _commandRegistry as BridgeCommandRegistry);
             _logger.Info("WebSocket service commands reloaded");
+            return null;
         }
 
-        private void LoadCommandRegistry(ConfigurationManager configManager)
+        private void LoadCommandRegistry(ConfigurationManager configManager, BridgeCommandRegistry reuseFrom)
         {
-            var registry = new RevitCommandRegistry();
+            var registry = new BridgeCommandRegistry();
             CommandManager commandManager = new CommandManager(
-                registry, _logger, configManager, _uiApp);
+                registry, _logger, configManager, _uiApp, reuseFrom);
             commandManager.LoadCommands();
 
             _commandRegistry = registry;
+            UserToolAccess.Publish(registry);
             _commandExecutor = new CommandExecutor(registry, _logger);
         }
 
@@ -492,7 +502,7 @@ namespace revit_mcp_plugin.Core
                 if (!registry.TryGetCommand(request.Method, out var command))
                 {
                     // A user command not loaded because "Allow my tools" is off: say so.
-                    string notLoaded = UserToolAccess.RefusalForMissing(request.Method);
+                    string notLoaded = UserToolAccess.RefusalForMissing(registry, request.Method);
                     if (notLoaded != null)
                     {
                         _logger.Warning("已拒绝用户工具 {0}（允许接入我的工具：关）\nRefused user tool {0} (Allow my tools: off).", request.Method);
@@ -506,7 +516,8 @@ namespace revit_mcp_plugin.Core
                 // "允许接入我的工具"关闭时，用户命令与固化工具的登记、运行在服务端拒绝。
                 // With "Allow my tools" off, user commands and solidified-tool register/run
                 // are refused here, before any prompt or command runs.
-                string refusal = UserToolAccess.RefusalFor(request.Method, request.GetParamsObject);
+                // Decided from the same registry snapshot the method was looked up in.
+                string refusal = UserToolAccess.RefusalFor(registry, request.Method, request.GetParamsObject);
                 if (refusal != null)
                 {
                     _logger.Warning("已拒绝用户工具 {0}（允许接入我的工具：关）\nRefused user tool {0} (Allow my tools: off).", request.Method);
