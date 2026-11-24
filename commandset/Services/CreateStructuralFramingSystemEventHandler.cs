@@ -241,8 +241,18 @@ namespace RevitMCPCommandSet.Services
                 // Build detailed error message with troubleshooting
                 string errorDetails = $"Failed to create beam system: {ex.Message}";
 
+                // 提交没有成功（按异常类型判断）：只报 guard 的文字，不走下面按子串匹配的排错提示，
+                // 那些提示会被 Revit 错误文字里的 "level"、"beam" 等词误触发。
+                // The commit did not succeed (decided by the exception type): report the guard's text
+                // only, not the substring-matched hints below, which words such as "level" or "beam"
+                // in Revit's error text would trigger by mistake.
+                if (ex is CommitNotCompletedException)
+                {
+                    // 不加提示
+                    // No hint.
+                }
                 // Add troubleshooting hints based on common errors
-                if (ex.Message.Contains("level") || ex.Message.Contains("Level"))
+                else if (ex.Message.Contains("level") || ex.Message.Contains("Level"))
                 {
                     errorDetails += "\n\nTroubleshooting: Check that the level name is correct and exists in the project.";
                 }
