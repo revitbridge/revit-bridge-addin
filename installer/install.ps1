@@ -636,6 +636,27 @@ param(
         return $null
     }
 
+    function ConvertFrom-SettingFlag {
+        param($Value)
+        # A true/false setting read the way the add-in reads it: a JSON boolean; the
+        # strings "true" and "false" in any case, spaces trimmed; a number is true unless
+        # it is zero. Returns $true or $false, $null for "not set" (absent, null or ""),
+        # and the string "unreadable" for anything else (the caller decides what that means).
+        if ($null -eq $Value) { return $null }
+        if ($Value -is [bool]) { return $Value }
+        if ($Value -is [string]) {
+            $text = $Value.Trim()
+            if ($text -eq "") { return $null }
+            if ($text -ieq "true") { return $true }
+            if ($text -ieq "false") { return $false }
+            return "unreadable"
+        }
+        if ($Value -is [int] -or $Value -is [long] -or $Value -is [decimal] -or $Value -is [double]) {
+            return ($Value -ne 0)
+        }
+        return "unreadable"
+    }
+
     function Get-RevitExeYear {
         param([string]$Path)
         # The Revit year of a Revit.exe: from its file version (26.x is 2026), or, when
@@ -758,8 +779,15 @@ param(
                     if ($null -ne $previous.settings.token) { $existingToken = [string]$previous.settings.token }
                     if ($null -ne $previous.settings.deviceId) { $existingDeviceId = [string]$previous.settings.deviceId }
                     if ($null -ne $previous.settings.wsUrl) { $existingWsUrl = [string]$previous.settings.wsUrl }
-                    if ($null -ne $previous.settings.confirmEachRun) { $existingConfirmEachRun = [bool]$previous.settings.confirmEachRun }
-                    if ($null -ne $previous.settings.allowRemoteCodeExecution) { $existingAllowRemoteCode = [bool]$previous.settings.allowRemoteCodeExecution }
+                    # Read as the add-in reads them ([bool]"false" would be $true in PowerShell).
+                    # A value that is not clearly false keeps the confirmation on; one that is
+                    # not clearly true keeps remote code execution off.
+                    $confirmValue = ConvertFrom-SettingFlag $previous.settings.confirmEachRun
+                    if ($confirmValue -is [bool]) { $existingConfirmEachRun = $confirmValue }
+                    elseif ($confirmValue -eq "unreadable") { Write-Warning "Ignored the previous confirmEachRun '$($previous.settings.confirmEachRun)' (not true or false); it stays on." }
+                    $remoteCodeValue = ConvertFrom-SettingFlag $previous.settings.allowRemoteCodeExecution
+                    if ($remoteCodeValue -is [bool]) { $existingAllowRemoteCode = $remoteCodeValue }
+                    elseif ($remoteCodeValue -eq "unreadable") { Write-Warning "Ignored the previous allowRemoteCodeExecution '$($previous.settings.allowRemoteCodeExecution)' (not true or false); it stays off." }
                     if ($null -ne $previous.settings.port) {
                         $portNumber = 0
                         if ([int]::TryParse([string]$previous.settings.port, [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, [ref]$portNumber) -and
@@ -774,13 +802,16 @@ param(
                         $existingLogLevel = [string]$previous.settings.logLevel
                     }
                     foreach ($flag in @("localTools", "autoStart", "panelShown")) {
-                        $flagValue = $previous.settings.$flag
+                        $flagValue = ConvertFrom-SettingFlag $previous.settings.$flag
                         if ($null -eq $flagValue) { continue }
                         if ($flagValue -is [bool]) {
                             $carriedFlags[$flag] = $flagValue
                         } else {
-                            # The add-in reads such a value as not set as well.
-                            Write-Warning "Ignored the previous $flag '$flagValue' (not true or false)."
+                            # The add-in reads an unreadable value as false (for localTools: off,
+                            # not the mode's default; for the others: their default, false), so
+                            # it is written as false.
+                            Write-Warning "Read the previous $flag '$($previous.settings.$flag)' as false (not true or false)."
+                            $carriedFlags[$flag] = $false
                         }
                     }
                 }
