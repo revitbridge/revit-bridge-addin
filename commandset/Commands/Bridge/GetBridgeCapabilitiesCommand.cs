@@ -85,6 +85,12 @@ namespace RevitMCPCommandSet.Commands.Bridge
                     ["dry_run_sources"] = methods.Contains("dry_run_code_in_revit"),
                     ["addin_test"] = methods.Contains("test_addin_command_in_revit"),
                     ["structured_diagnostics"] = true,
+                    // 提交时的 Revit 警告与错误不弹框，send_code_to_revit 回复里有 warnings / errors：
+                    // 有此标志时，回复里没有 warnings 键就是没有警告（旧版 add-in 没有此标志）。
+                    // Commit-time Revit warnings and errors open no dialog and send_code_to_revit
+                    // replies carry warnings / errors: with this flag, a reply without a warnings key
+                    // means there were no warnings (older add-ins lack the flag).
+                    ["commit_failures"] = true,
                     ["kit"] = false,
                 },
                 ["revit"] = new JObject
