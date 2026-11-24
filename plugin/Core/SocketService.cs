@@ -1,5 +1,7 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -22,8 +24,19 @@ namespace revit_mcp_plugin.Core
         private bool _isRunning;
         private int _port = 18080;
         private UIApplication _uiApp;
-        private ICommandRegistry _commandRegistry;
+        // 每次加载命令都换一个新的注册表，整体替换；请求线程每次只取一次引用。
+        // Every command load fills a new registry and swaps it in whole; a request thread
+        // reads the reference once, so it never sees a half-filled registry.
+        private volatile ICommandRegistry _commandRegistry;
         private ILogger _logger;
+        private volatile string _lastStartError;
+        private volatile string _configLoadError;
+        // Why Start must refuse (a "token" that is present but unreadable, a settings file
+        // that exists but cannot be read), or null.
+        private string _startRefusal;
+        // What the running service enforces, read at Initialize; a reload compares the file with it.
+        private ServiceSettings _runningSettings = new ServiceSettings();
+        private bool _startedWithLoadError;
         private CommandExecutor _commandExecutor;
         private string _authToken;
         private bool _tokenWarningLogged;
@@ -41,7 +54,7 @@ namespace revit_mcp_plugin.Core
 
         private SocketService()
         {
-            _commandRegistry = new RevitCommandRegistry();
+            _commandRegistry = new BridgeCommandRegistry();
             _logger = new Logger();
         }
 
@@ -52,6 +65,18 @@ namespace revit_mcp_plugin.Core
             get => _port;
             set => _port = value;
         }
+
+        /// <summary>
+        /// <para>上一次 Start 失败的原因（含端口）；成功启动后为 null。</para>
+        /// <para>Why the last Start failed, naming the port; null after a successful start.</para>
+        /// </summary>
+        public string LastStartError => _lastStartError;
+
+        /// <summary>Why commandRegistry.json was not read at the last load, or null.</summary>
+        public string ConfigLoadError => _configLoadError;
+
+        /// <summary>Number of methods the current registry answers.</summary>
+        public int RegisteredMethodCount => CountMethods(_commandRegistry);
 
         // 初始化
         // Initialization.
@@ -69,50 +94,159 @@ namespace revit_mcp_plugin.Core
             string currentVersion = versionAdapter.GetRevitVersion();
             _logger.Info("当前 Revit 版本: {0}\nCurrent Revit version: {0}", currentVersion);
 
-
-
-            // 创建命令执行器
-            // Create CommandExecutor
-            _commandExecutor = new CommandExecutor(_commandRegistry, _logger);
-
             // 加载配置并注册命令
             // Load configuration and register commands.
             ConfigurationManager configManager = new ConfigurationManager(_logger);
             configManager.LoadConfiguration();
 
-            // 读取预共享鉴权 token（可选增强，缺失时向后兼容放行）
-            // Read the pre-shared auth token (optional; missing token stays backward compatible).
-            _authToken = configManager.Config?.Settings?.Token;
-            _confirmEachRun = configManager.Config?.Settings?.ConfirmEachRun ?? true;
+            // 读取结果、token、逐次确认、端口
+            // Load result, token, per-run confirmation, port.
+            ApplyConfiguration(configManager);
 
             // 确认对话框的外部事件必须在 Revit UI 线程上创建（Initialize 由 Ribbon 点击触发）。
             // The confirmation dialog's external event has to be created on the Revit UI
             // thread; Initialize() runs from the ribbon click.
             ConfirmationPrompt.Initialize();
 
+            // 加载命令
+            // Load command.
+            LoadCommandRegistry(configManager, null);
+
+            _logger.Info($"Socket service initialized on port {_port}");
+        }
+
+        /// <summary>
+        /// <para>Initialize 中与 Revit 无关的一步：token、逐次确认、端口。token 存在却读不出（例如是
+        /// 对象）时记下拒绝原因，Start 不启动：本机端口不能在没有密钥的情况下开放。</para>
+        /// <para>The Revit-free step of Initialize: token, per-run confirmation, port. When a
+        /// "token" is present but cannot be read (an object, say), Start refuses with the
+        /// reason: the local port must not open without its secret.</para>
+        /// </summary>
+        internal void ApplyConfiguration(ConfigurationManager configManager)
+        {
+            _configLoadError = configManager.LoadError;
+            _startedWithLoadError = configManager.LoadError != null;
+            ApplySettings(configManager.Config?.Settings);
+            // 文件存在却读不出：不开本机端口（读不到 token 就可能在没有密钥时开放）；文件不存在按缺省值启动。
+            // The file exists but cannot be read: the local port does not open (its token, if
+            // any, is unknown). A missing file is a fresh install and starts on the defaults.
+            if (configManager.FileUnreadable)
+                _startRefusal = configManager.LoadError +
+                                ", so the local bridge does not start. Repair the file or re-run the installer.";
+        }
+
+        /// <summary>
+        /// <para>运行中能否按磁盘上的设置重载命令：启动时配置读不出、现在读不出、或与安全有关的设置
+        /// （token、模式、端口、allowRemoteCodeExecution）已变，都拒绝，须关再开。返回 null 表示可以。</para>
+        /// <para>Whether a running service may reload its commands from the settings now on
+        /// disk. Refused when the service started on a configuration it could not read, when
+        /// the file cannot be read now, or when a security-relevant setting (token, mode,
+        /// port, allowRemoteCodeExecution) differs from what the service enforces: the bridge
+        /// must be turned off and on instead. null when the reload may go on.</para>
+        /// </summary>
+        internal string ReloadRefusal(ConfigurationManager now)
+        {
+            return ReloadRefusal(_startedWithLoadError, _runningSettings, now);
+        }
+
+        internal static string ReloadRefusal(bool startedWithLoadError, ServiceSettings running, ConfigurationManager now)
+        {
+            if (startedWithLoadError)
+                return "the bridge was turned on while commandRegistry.json could not be read; turn the bridge off and on to apply the settings";
+            if (now.LoadError != null)
+                return now.LoadError + "; the loaded commands were kept. Repair the file, then turn the bridge off and on";
+            IList<string> changed = ServiceSettings.SecurityDifferences(running, now.Config?.Settings);
+            if (changed.Count > 0)
+                return "settings changed on disk since the bridge was turned on (" + string.Join(", ", changed) +
+                       "); turn the bridge off and on to apply them";
+            return null;
+        }
+
+        internal void ApplySettings(ServiceSettings settings)
+        {
+            _runningSettings = settings ?? new ServiceSettings();
+
+            // 读取预共享鉴权 token（可选增强，缺失时向后兼容放行）
+            // Read the pre-shared auth token (optional; missing token stays backward compatible).
+            _authToken = settings?.Token;
+            _confirmEachRun = settings?.ConfirmEachRun ?? true;
+            _startRefusal = settings != null && settings.TokenUnreadable
+                ? "the 'token' in Commands\\commandRegistry.json is not text, so the local bridge would have no secret. " +
+                  "Fix or remove 'token' in that file (or re-run the installer)."
+                : null;
 
             // 从配置中读取服务端口（缺省仍为字段默认值 18080）
             // Read the service port from the configuration (defaults to 18080 when unset).
-            if (configManager.Config?.Settings?.Port > 0)
+            if (settings?.Port > 0)
             {
-                _port = configManager.Config.Settings.Port;
+                _port = settings.Port;
             }
+        }
 
-            // 加载命令
-            // Load command.
+        /// <summary>
+        /// <para>重新读配置、重建命令注册表（"允许接入我的工具"切换后）：官方命令沿用现有实例，只增减用户命令。
+        /// 端口、token、逐次确认仍是启动时的值。配置读不出时保留现有注册表。须在 Revit API 上下文中调用。</para>
+        /// <para>Read the configuration again and rebuild the command registry (after
+        /// "Allow my tools" changed): official commands keep their instances, only user
+        /// commands are added or dropped. Port, token and per-run confirmation keep their
+        /// values from the start. When the configuration cannot be read the current registry
+        /// stays. Call in a Revit API context: a new command's constructor creates external
+        /// events.</para>
+        /// </summary>
+        /// <returns>null when reloaded, else why not.</returns>
+        public string ReloadCommands()
+        {
+            if (_uiApp == null) return "the bridge has not been started in this Revit session";
+
+            ConfigurationManager configManager = new ConfigurationManager(_logger);
+            configManager.LoadConfiguration();
+            string refusal = ReloadRefusal(configManager);
+            if (refusal != null)
+            {
+                _logger.Warning("未重载命令，保留已加载的命令 / Commands not reloaded; kept the loaded ones: {0}", refusal);
+                return refusal;
+            }
+            _configLoadError = null;
+            LoadCommandRegistry(configManager, _commandRegistry as BridgeCommandRegistry);
+            _logger.Info("Socket service commands reloaded");
+            return null;
+        }
+
+        private void LoadCommandRegistry(ConfigurationManager configManager, BridgeCommandRegistry reuseFrom)
+        {
+            var registry = new BridgeCommandRegistry();
             CommandManager commandManager = new CommandManager(
-                _commandRegistry, _logger, configManager, _uiApp);
+                registry, _logger, configManager, _uiApp, reuseFrom);
             commandManager.LoadCommands();
 
-            _logger.Info($"Socket service initialized on port {_port}");
+            _commandRegistry = registry;
+            UserToolAccess.Publish(registry);
+            // 创建命令执行器
+            // Create CommandExecutor
+            _commandExecutor = new CommandExecutor(registry, _logger);
+        }
+
+        // A published registry is never changed again, so counting it from the UI thread is safe.
+        internal static int CountMethods(ICommandRegistry registry)
+        {
+            return (registry as RevitCommandRegistry)?.GetRegisteredCommands().Count() ?? 0;
         }
 
         public void Start()
         {
             if (_isRunning) return;
 
+            if (_startRefusal != null)
+            {
+                _lastStartError = _startRefusal;
+                UserToolAccess.Unpublish(_commandRegistry);
+                _logger.Error("Socket 服务拒绝启动 / Socket service refused to start: {0}", _startRefusal);
+                return;
+            }
+
             try
             {
+                _lastStartError = null;
                 _isRunning = true;
                 // 仅监听本地回环地址，避免同网段主机直连未鉴权端口
                 // Bind to loopback only so other hosts on the LAN cannot reach the port.
@@ -128,8 +262,41 @@ namespace revit_mcp_plugin.Core
             catch (Exception ex)
             {
                 _isRunning = false;
+                try
+                {
+                    _listener?.Stop();
+                }
+                catch (SocketException stopEx)
+                {
+                    _logger.Debug("Socket 监听器清理失败 / Could not clean up the listener: {0}", stopEx.Message);
+                }
+                _listener = null;
+                UserToolAccess.Unpublish(_commandRegistry);
+                _lastStartError = DescribeStartFailure(ex, _port);
                 _logger.Error("Socket 服务启动失败 / Failed to start socket service: {0}", ex.Message);
             }
+        }
+
+        /// <summary>
+        /// <para>启动失败的说明：端口与原因。</para>
+        /// <para>One line for a failed start: the port and why.</para>
+        /// </summary>
+        public static string DescribeStartFailure(Exception ex, int port)
+        {
+            if (ex is SocketException socketEx)
+            {
+                switch (socketEx.SocketErrorCode)
+                {
+                    case SocketError.AddressAlreadyInUse:
+                        return $"port {port} is already in use (another Revit or another program is listening on it). " +
+                               "Turn the bridge off there, or choose another port in the Revit Bridge panel (Advanced).";
+                    case SocketError.AccessDenied:
+                        return $"port {port} cannot be used (access denied; Windows may have reserved it). " +
+                               "Choose another port in the Revit Bridge panel (Advanced).";
+                }
+                return $"port {port}: {socketEx.Message} ({socketEx.SocketErrorCode})";
+            }
+            return $"port {port}: {ex.Message}";
         }
 
         public void Stop()
@@ -139,6 +306,8 @@ namespace revit_mcp_plugin.Core
             try
             {
                 _isRunning = false;
+                // Stopped: user_tools and the commands' registry view no longer show this registry.
+                UserToolAccess.Unpublish(_commandRegistry);
 
                 _listener?.Stop();
                 _listener = null;
@@ -301,10 +470,31 @@ namespace revit_mcp_plugin.Core
 
                 // 查找命令
                 // Search for the command in the registry.
-                if (!_commandRegistry.TryGetCommand(request.Method, out var command))
+                ICommandRegistry registry = _commandRegistry;
+                if (!registry.TryGetCommand(request.Method, out var command))
                 {
+                    // 因"允许接入我的工具"关闭而没有加载的用户命令：明确拒绝，而不是"找不到"。
+                    // A user command not loaded because "Allow my tools" is off: say so
+                    // instead of "not found".
+                    string notLoaded = UserToolAccess.RefusalForMissing(registry, request.Method);
+                    if (notLoaded != null)
+                    {
+                        _logger.Warning("已拒绝用户工具 {0}（允许接入我的工具：关）\nRefused user tool {0} (Allow my tools: off).", request.Method);
+                        return CreateErrorResponse(request.Id, UserToolAccess.ErrorCode, notLoaded);
+                    }
                     return CreateErrorResponse(request.Id, JsonRPCErrorCodes.MethodNotFound,
                         $"Method '{request.Method}' not found");
+                }
+
+                // "允许接入我的工具"关闭时，用户命令与固化工具的登记、运行在服务端拒绝。
+                // With "Allow my tools" off, user commands and solidified-tool register/run
+                // are refused here, before any prompt or command runs.
+                // Decided from the same registry snapshot the method was looked up in.
+                string refusal = UserToolAccess.RefusalFor(registry, request.Method, request.GetParamsObject);
+                if (refusal != null)
+                {
+                    _logger.Warning("已拒绝用户工具 {0}（允许接入我的工具：关）\nRefused user tool {0} (Allow my tools: off).", request.Method);
+                    return CreateErrorResponse(request.Id, UserToolAccess.ErrorCode, refusal);
                 }
 
                 // 逐次确认：服务器给即席代码的请求加 confirm 参数，设备侧弹窗询问设计师。

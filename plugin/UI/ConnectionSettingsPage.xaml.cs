@@ -12,23 +12,18 @@ using System.Windows.Threading;
 
 namespace revit_mcp_plugin.UI
 {
+    /// <summary>
+    /// <para>Revit Bridge 面板里的"连接"部分：本机 / 云端、配对、高级（端口、逐次确认）。
+    /// 实时状态由面板顶部显示。</para>
+    /// <para>The "Connection" part of the Revit Bridge panel: local / remote, pairing,
+    /// Advanced (port, per-run confirmation). The panel's top line shows the live status.</para>
+    /// </summary>
     public partial class ConnectionSettingsPage : Page
     {
-        private readonly DispatcherTimer _statusTimer;
-
         public ConnectionSettingsPage()
         {
             InitializeComponent();
             LoadSettings();
-            UpdateStatus();
-
-            _statusTimer = new DispatcherTimer
-            {
-                Interval = TimeSpan.FromSeconds(1)
-            };
-            _statusTimer.Tick += (_, _) => UpdateStatus();
-            Loaded += (_, _) => _statusTimer.Start();
-            Unloaded += (_, _) => _statusTimer.Stop();
         }
 
         private void LoadSettings()
@@ -78,18 +73,10 @@ namespace revit_mcp_plugin.UI
 
         private void Mode_Changed(object sender, RoutedEventArgs e)
         {
-            if (TcpPanel == null || WsPanel == null) return;
+            if (WsPanel == null) return;
 
-            if (WsRadio.IsChecked == true)
-            {
-                TcpPanel.Visibility = Visibility.Collapsed;
-                WsPanel.Visibility = Visibility.Visible;
-            }
-            else
-            {
-                TcpPanel.Visibility = Visibility.Visible;
-                WsPanel.Visibility = Visibility.Collapsed;
-            }
+            // Only the remote mode shows the server and pairing.
+            WsPanel.Visibility = WsRadio.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
         }
 
         // ── Pairing ────────────────────────────────────────────────────
@@ -148,9 +135,10 @@ namespace revit_mcp_plugin.UI
                     WsUrlTextBox.Text = result.WsUrl;
                     PairCodeTextBox.Text = "";
                     ShowDevice(saved);
+                    BridgeController.SettingsChanged();
                     PairStatusText.Text = WebSocketService.Instance.IsRunning
-                        ? $"Paired as {result.DeviceId}; remote code execution allowed. Click 'Revit MCP Switch' twice (stop, start) to reconnect as this device."
-                        : $"Paired as {result.DeviceId}; remote code execution allowed. Click 'Revit MCP Switch' to connect.";
+                        ? $"Paired as {result.DeviceId}; remote code execution allowed. Turn the bridge off and on again to reconnect as this device."
+                        : $"Paired as {result.DeviceId}; remote code execution allowed. Turn the bridge on to connect.";
                 }
                 catch (PairingException ex)
                 {
@@ -192,6 +180,7 @@ namespace revit_mcp_plugin.UI
 
                 if (WebSocketService.Instance.IsRunning)
                     WebSocketService.Instance.Stop();
+                BridgeController.SettingsChanged();
 
                 WsUrlTextBox.Text = "";
                 ShowDevice(saved);
@@ -218,40 +207,6 @@ namespace revit_mcp_plugin.UI
             }
         }
 
-        // ── Live status ────────────────────────────────────────────────
-
-        private void UpdateStatus()
-        {
-            bool tcpRunning = SocketService.Instance.IsRunning;
-            WebSocketService wsService = WebSocketService.Instance;
-
-            if (tcpRunning)
-            {
-                StatusText.Text = $"TCP Server running on port {SocketService.Instance.Port}";
-            }
-            else if (wsService.IsUnpaired)
-            {
-                StatusText.Text =
-                    $"Unpaired or revoked: the server refused device {wsService.UnpairedDeviceId}. " +
-                    "Enter a new pairing code above.";
-            }
-            else if (wsService.IsConnected)
-            {
-                StatusText.Text = $"WebSocket connected as {wsService.DeviceId}";
-            }
-            else if (wsService.IsRunning)
-            {
-                StatusText.Text = string.IsNullOrWhiteSpace(wsService.LastConnectionError)
-                    ? $"WebSocket connecting as {wsService.DeviceId}..."
-                    : $"WebSocket reconnecting as {wsService.DeviceId}. " +
-                      $"Last error: {wsService.LastConnectionError}";
-            }
-            else
-            {
-                StatusText.Text = "Not connected";
-            }
-        }
-
         // ── Save ───────────────────────────────────────────────────────
 
         private void SaveButton_Click(object sender, RoutedEventArgs e)
@@ -264,10 +219,11 @@ namespace revit_mcp_plugin.UI
                 if (!int.TryParse(PortTextBox.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out port) ||
                     port < 1 || port > 65535)
                 {
-                    MessageBox.Show(
+                    AdvancedExpander.IsExpanded = true;
+                    ShowSaveStatus(
                         $"端口“{PortTextBox.Text}”无效：请输入 1 到 65535 之间的整数。设置未保存。\n" +
                         $"Invalid port \"{PortTextBox.Text}\": enter a whole number from 1 to 65535. The settings were not saved.",
-                        "Settings", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        isError: true);
                     PortTextBox.Focus();
                     return;
                 }
@@ -283,14 +239,27 @@ namespace revit_mcp_plugin.UI
                     s.Port = port;
                     s.ConfirmEachRun = confirmEachRun;
                 });
+                BridgeController.SettingsChanged();
 
-                MessageBox.Show("Settings saved.\nRestart the connection for changes to take effect.",
-                    "Settings", MessageBoxButton.OK, MessageBoxImage.Information);
+                ShowSaveStatus(BridgeController.IsOn
+                        ? "Saved. Turn the bridge off and on again to use the new settings."
+                        : "Saved.",
+                    isError: false);
             }
             catch (Exception ex)
             {
-                ReportUnexpected("Failed to save", ex);
+                System.Diagnostics.Trace.WriteLine($"Failed to save: {ex}");
+                ShowSaveStatus($"Failed to save: {ex.Message}", isError: true);
             }
+        }
+
+        private void ShowSaveStatus(string text, bool isError)
+        {
+            SaveStatusText.Text = text;
+            SaveStatusText.Foreground = isError
+                ? System.Windows.Media.Brushes.Firebrick
+                : System.Windows.Media.Brushes.DimGray;
+            SaveStatusText.Visibility = Visibility.Visible;
         }
     }
 }

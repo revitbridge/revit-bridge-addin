@@ -1,0 +1,53 @@
+<Window x:Class="revit_mcp_plugin.UI.BridgePanel"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Revit Bridge" Width="780" Height="720" MinWidth="560" MinHeight="420"
+        ShowInTaskbar="False" ResizeMode="CanResizeWithGrip">
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Margin="16">
+            <!-- What this is, and how to get back here -->
+            <TextBlock TextWrapping="Wrap" Foreground="#444444" Margin="0,0,0,10"
+                       Text="Revit Bridge connects AI tools (an MCP server on this computer, or a paired cloud server) to this Revit. The Revit Bridge button on the Add-Ins ribbon turns it on and off; Shift+click that button to open this panel again."/>
+
+            <!-- Switch and live status -->
+            <Border Padding="12" Background="#f0f8ff" BorderBrush="#b0d4f1" BorderThickness="1"
+                    CornerRadius="4" Margin="0,0,0,14">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Button x:Name="SwitchButton" Content="Turn on" Width="110" Height="30"
+                            VerticalAlignment="Center" Click="SwitchButton_Click"/>
+                    <TextBlock x:Name="StatusText" Grid.Column="1" Margin="12,0,0,0" Text="Off"
+                               VerticalAlignment="Center" TextWrapping="Wrap"/>
+                </Grid>
+            </Border>
+
+            <!-- Allow my tools -->
+            <CheckBox x:Name="MyToolsCheckBox" Content="Allow my tools" FontWeight="SemiBold"
+                      Checked="MyToolsCheckBox_Changed" Unchecked="MyToolsCheckBox_Changed"/>
+            <TextBlock Foreground="#666666" TextWrapping="Wrap" Margin="20,2,0,2"
+                       Text="Lets your own command sets (other folders under Commands) and solidified tools plug in. You can leave it off when you only use the cloud MCP. While it is off, requests for them are refused."/>
+            <TextBlock x:Name="MyToolsDefaultText" Foreground="#666666" FontStyle="Italic" TextWrapping="Wrap"
+                       Margin="20,0,0,10" Text=""/>
+
+            <!-- Auto start -->
+            <CheckBox x:Name="AutoStartCheckBox" Content="Turn the bridge on when Revit starts"
+                      Checked="AutoStartCheckBox_Changed" Unchecked="AutoStartCheckBox_Changed"/>
+            <TextBlock x:Name="SettingsProblemsText" TextWrapping="Wrap" Margin="0,8,0,0"
+                       Foreground="#B35C00" Visibility="Collapsed"/>
+            <TextBlock x:Name="SettingsMessageText" TextWrapping="Wrap" Margin="0,8,0,0"
+                       Foreground="#666666" Visibility="Collapsed"/>
+
+            <!-- Connection: local or remote, pairing, port -->
+            <Frame x:Name="ConnectionFrame" NavigationUIVisibility="Hidden" Margin="0,14,0,0"/>
+
+            <!-- Advanced: command list (built when first opened) -->
+            <Expander x:Name="CommandSetExpander" Header="Advanced: commands" Margin="0,12,0,0"
+                      IsExpanded="False" Expanded="CommandSetExpander_Expanded">
+                <Frame x:Name="CommandSetFrame" NavigationUIVisibility="Hidden" Height="440" Margin="0,8,0,0"/>
+            </Expander>
+        </StackPanel>
+    </ScrollViewer>
+</Window>

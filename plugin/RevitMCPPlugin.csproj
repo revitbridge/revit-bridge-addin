@@ -72,8 +72,9 @@
         <Resource Include="Core\Ressources\icon-32.png"/>
     </ItemGroup>
     <ItemGroup>
-        <Resource Include="Core\Ressources\settings-16.png"/>
-        <Resource Include="Core\Ressources\settings-32.png"/>
+        <!-- The ribbon button while the bridge is on. -->
+        <Resource Include="Core\Ressources\icon-on-16.png"/>
+        <Resource Include="Core\Ressources\icon-on-32.png"/>
     </ItemGroup>
     <ItemGroup>
         <PackageReference Include="Newtonsoft.Json" Version="13.0.3"/>
