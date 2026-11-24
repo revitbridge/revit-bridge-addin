@@ -23,6 +23,8 @@ namespace revit_mcp_plugin.UI
         private readonly DispatcherTimer _statusTimer;
         private bool _loading;
         private CommandSetSettingsPage _commandSetPage;
+        // A reload of the commands this panel asked for and is waiting on (0: none).
+        private int _reloadTicket;
 
         /// <summary>Open the panel, or bring the open one to the front. Revit UI thread.</summary>
         /// <param name="owner">Revit's main window handle (UIApplication.MainWindowHandle).</param>
@@ -55,28 +57,45 @@ namespace revit_mcp_plugin.UI
         {
             InitializeComponent();
             ConnectionFrame.Navigate(new ConnectionSettingsPage());
-            LoadSettings();
+            string error;
+            ShowSettings(SettingsStore.LoadOrDefaults(out error).Settings, error);
             RefreshStatus();
 
             _statusTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
             _statusTimer.Tick += (_, _) => RefreshStatus();
             Loaded += (_, _) => _statusTimer.Start();
-            Closed += (_, _) => _statusTimer.Stop();
+
+            // Saving a mode change (Connection) or pairing moves the default of an unset
+            // "Allow my tools": show the new effective value at once, and why.
+            Action onSettingsReloaded = () => ShowSettings(BridgeController.Settings, BridgeController.SettingsError);
+            BridgeController.SettingsReloaded += onSettingsReloaded;
+            Closed += (_, _) =>
+            {
+                _statusTimer.Stop();
+                BridgeController.SettingsReloaded -= onSettingsReloaded;
+            };
         }
 
-        private void LoadSettings()
+        private void ShowSettings(ServiceSettings settings, string error)
         {
             _loading = true;
             try
             {
-                string error;
-                ServiceSettings settings = SettingsStore.LoadOrDefaults(out error).Settings;
                 MyToolsCheckBox.IsChecked = settings.LocalToolsEnabled;
                 AutoStartCheckBox.IsChecked = settings.AutoStart;
+                bool remote = string.Equals(settings.Mode, "websocket", StringComparison.OrdinalIgnoreCase);
+                MyToolsDefaultText.Text = settings.LocalToolsIsDefault
+                    ? $"Not set yet, so it follows the default for {(remote ? "remote" : "local")} mode: " +
+                      $"{(settings.LocalToolsEnabled ? "on" : "off")}. Ticking or unticking it sets it for good."
+                    : "Set by you; it no longer follows the connection mode.";
                 if (error != null)
-                    ShowSettingsMessage(error + ". The defaults are shown (local, Allow my tools off, no auto start). " +
-                                        "Repair the file or re-run the installer; until then changes here cannot be saved.",
+                    ShowSettingsMessage(error + ". The defaults are shown (local mode, Allow my tools on as the local default, " +
+                                        "no auto start). Repair the file or re-run the installer; until then changes here cannot be saved.",
                                         isError: true);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Trace.WriteLine($"revit-bridge panel: could not show the settings: {ex.Message}");
             }
             finally
             {
@@ -93,6 +112,7 @@ namespace revit_mcp_plugin.UI
                                   (BridgeController.HasPendingWork ? " Waiting for Revit to be idle..." : "");
                 SwitchButton.Content = status.IsOn ? "Turn off" : "Turn on";
                 SwitchButton.IsEnabled = BridgeController.CanPost;
+                ReportReloadWhenDone();
             }
             catch (Exception ex)
             {
@@ -108,7 +128,8 @@ namespace revit_mcp_plugin.UI
                 if (BridgeController.Post(on ? BridgeRequest.TurnOff : BridgeRequest.TurnOn))
                     StatusText.Text = on ? "Turning off..." : "Turning on...";
                 else
-                    StatusText.Text = "The switch is not available here; use the Revit Bridge button on the ribbon.";
+                    StatusText.Text = "Revit did not take the request now (it may be busy, for example in a dialog). " +
+                                      "Try again, or use the Revit Bridge button on the ribbon.";
             }
             catch (Exception ex)
             {
@@ -123,17 +144,73 @@ namespace revit_mcp_plugin.UI
             try
             {
                 SettingsStore.UpdateSettings(s => s.LocalTools = allowed);
-                BridgeController.SetUserToolsAllowed(allowed);
-                ShowSettingsMessage(allowed
-                    ? "Allow my tools is on: your command sets and solidified tools can be used."
-                    : "Allow my tools is off: only the commands installed with the add-in answer; requests for your own tools are refused.",
-                    isError: false);
             }
             catch (Exception ex)
             {
                 SetQuietly(() => MyToolsCheckBox.IsChecked = !allowed);
                 ShowSettingsMessage("Could not save 'Allow my tools': " + ex.Message, isError: true);
+                return;
             }
+
+            try
+            {
+                int ticket = BridgeController.SetUserToolsAllowed(allowed);
+                _reloadTicket = 0;
+                if (!allowed)
+                {
+                    // Refused at once by the services, whatever happens to the reload.
+                    ShowSettingsMessage("Allow my tools is off: requests for your own tools are refused from now on. " +
+                                        "Tools already loaded stay in memory until Revit restarts." +
+                                        (ticket < 0 ? " (Revit did not take the request to update the command list now; " +
+                                                      "turn the bridge off and on to update it.)" : ""),
+                                        isError: false);
+                }
+                else if (ticket == 0)
+                {
+                    ShowSettingsMessage("Allow my tools is on. Your tools load the next time the bridge is turned on.", isError: false);
+                }
+                else if (ticket < 0)
+                {
+                    ShowSettingsMessage("Allow my tools is saved as on, but Revit did not take the request to load your tools now " +
+                                        "(it may be busy, for example in a dialog). Turn the bridge off and on to load them.",
+                                        isError: true);
+                }
+                else
+                {
+                    // Claimed only when Revit has actually reloaded (see ReportReloadWhenDone).
+                    _reloadTicket = ticket;
+                    ShowSettingsMessage("Allow my tools is on. Loading your tools...", isError: false);
+                }
+            }
+            catch (Exception ex)
+            {
+                ReportUnexpected("Could not apply 'Allow my tools'", ex);
+            }
+        }
+
+        // Called every second: says what the reload this panel asked for actually did.
+        private void ReportReloadWhenDone()
+        {
+            if (_reloadTicket <= 0)
+                return;
+            string error;
+            if (!BridgeController.TryGetReloadResult(_reloadTicket, out error))
+                return;
+            _reloadTicket = 0;
+
+            if (error != null)
+            {
+                ShowSettingsMessage("Allow my tools is saved as on, but the commands could not be reloaded (" + error + "). " +
+                                    "Turn the bridge off and on to load your tools.", isError: true);
+                return;
+            }
+
+            var loaded = UserToolAccess.LoadedUserMethods;
+            ShowSettingsMessage(loaded.Count > 0
+                ? "Allow my tools is on. Your tools are loaded: " + string.Join(", ", loaded) + "."
+                : "Allow my tools is on, but none of your tools is enabled. Tick them under Advanced: commands, " +
+                  "save, then turn the bridge off and on.",
+                isError: false);
         }
 
         private void AutoStartCheckBox_Changed(object sender, RoutedEventArgs e)

@@ -5,6 +5,10 @@
         ShowInTaskbar="False" ResizeMode="CanResizeWithGrip">
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
         <StackPanel Margin="16">
+            <!-- What this is, and how to get back here -->
+            <TextBlock TextWrapping="Wrap" Foreground="#444444" Margin="0,0,0,10"
+                       Text="Revit Bridge connects AI tools (an MCP server on this computer, or a paired cloud server) to this Revit. The Revit Bridge button on the Add-Ins ribbon turns it on and off; Shift+click that button to open this panel again."/>
+
             <!-- Switch and live status -->
             <Border Padding="12" Background="#f0f8ff" BorderBrush="#b0d4f1" BorderThickness="1"
                     CornerRadius="4" Margin="0,0,0,14">
@@ -23,8 +27,10 @@
             <!-- Allow my tools -->
             <CheckBox x:Name="MyToolsCheckBox" Content="Allow my tools" FontWeight="SemiBold"
                       Checked="MyToolsCheckBox_Changed" Unchecked="MyToolsCheckBox_Changed"/>
-            <TextBlock Foreground="#666666" TextWrapping="Wrap" Margin="20,2,0,10"
+            <TextBlock Foreground="#666666" TextWrapping="Wrap" Margin="20,2,0,2"
                        Text="Lets your own command sets (other folders under Commands) and solidified tools plug in. You can leave it off when you only use the cloud MCP. While it is off, requests for them are refused."/>
+            <TextBlock x:Name="MyToolsDefaultText" Foreground="#666666" FontStyle="Italic" TextWrapping="Wrap"
+                       Margin="20,0,0,10" Text=""/>
 
             <!-- Auto start -->
             <CheckBox x:Name="AutoStartCheckBox" Content="Turn the bridge on when Revit starts"

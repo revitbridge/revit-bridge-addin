@@ -28,12 +28,12 @@ namespace revit_mcp_plugin.Core
             {
                 if (BridgeController.IsShiftDown())
                 {
-                    BridgePanel.ShowPanel(commandData.Application.MainWindowHandle);
+                    BridgeController.OpenPanel(commandData.Application);
                     return Result.Succeeded;
                 }
 
-                // Cancelled when nothing changed (a failed start, reported once already):
-                // Revit then shows nothing more.
+                // Cancelled when nothing changed (a failed start, reported once already, or
+                // a second click within the debounce time): Revit then shows nothing more.
                 return BridgeController.Toggle(commandData.Application, BridgeOrigin.Ribbon)
                     ? Result.Succeeded
                     : Result.Cancelled;
@@ -114,8 +114,35 @@ namespace revit_mcp_plugin.Core
         private static volatile ServiceSettings _settings = new ServiceSettings();
         private static volatile string _settingsError;
 
+        // A second click this soon after the end of a switch is ignored: the old "started"
+        // dialog used to swallow double clicks.
+        internal const int DebounceMilliseconds = 800;
+        private static DateTime _lastSwitchEndUtc = DateTime.MinValue;
+
+        // The panel opens by itself once per install, on the first switch-on (settings.panelShown);
+        // when that flag cannot be saved, once per Revit session.
+        private static bool _panelOpenedThisSession;
+
+        // Reloads the panel asked for, and the last one Revit has run (with its outcome).
+        private static int _reloadRequested;
+        private static volatile int _reloadDone;
+        private static volatile string _reloadError;
+
         /// <summary>Why the last start did not happen, or null.</summary>
         public static string LastError => _lastError;
+
+        /// <summary>
+        /// <para>设置快照重读之后（Revit UI 线程）。面板据此刷新勾选框与"按模式缺省"的说明。</para>
+        /// <para>Raised after the settings snapshot was read again (Revit UI thread). The panel
+        /// refreshes its checkboxes and the "default for this mode" note from it.</para>
+        /// </summary>
+        public static event Action SettingsReloaded;
+
+        /// <summary>The settings as last read (defaults when the file could not be read).</summary>
+        public static ServiceSettings Settings => _settings ?? new ServiceSettings();
+
+        /// <summary>Why the settings file could not be read at the last read, or null.</summary>
+        public static string SettingsError => _settingsError;
 
         public static bool IsOn => SocketService.Instance.IsRunning || WebSocketService.Instance.IsRunning;
 
@@ -165,15 +192,66 @@ namespace revit_mcp_plugin.Core
 
         // ── Switching (Revit UI thread, API context) ────────────────────
 
-        /// <summary>Turn the bridge off when on, on when off. True when the state changed.</summary>
+        /// <summary>
+        /// <para>开着就关，关着就开。上一次开关结束后 800 毫秒内的再次单击忽略（返回 false）。
+        /// 本次安装第一次从按钮开启成功时，面板自己打开一次。</para>
+        /// <para>Turn the bridge off when on, on when off; true when the state changed. A
+        /// click within 800 ms of the end of the previous switch is ignored (false). The first
+        /// switch-on from the button on this install opens the panel once.</para>
+        /// </summary>
         public static bool Toggle(UIApplication uiApp, BridgeOrigin origin)
         {
-            if (IsOn)
+            if (IsWithinDebounce(_lastSwitchEndUtc, DateTime.UtcNow))
             {
-                TurnOff();
-                return true;
+                System.Diagnostics.Trace.WriteLine("revit-bridge: second click within the debounce time ignored.");
+                return false;
             }
-            return TurnOn(uiApp, origin);
+
+            try
+            {
+                if (IsOn)
+                {
+                    TurnOff();
+                    return true;
+                }
+
+                bool started = TurnOn(uiApp, origin);
+                // First switch-on of this install: show where the settings are, once, non-modal.
+                if (started && origin == BridgeOrigin.Ribbon && !Settings.PanelShown && !_panelOpenedThisSession)
+                    ShowPanel(uiApp, fallbackDialog: false, null);
+                return started;
+            }
+            finally
+            {
+                _lastSwitchEndUtc = DateTime.UtcNow;
+            }
+        }
+
+        internal static bool IsWithinDebounce(DateTime lastSwitchEndUtc, DateTime nowUtc)
+        {
+            double elapsed = (nowUtc - lastSwitchEndUtc).TotalMilliseconds;
+            return elapsed >= 0 && elapsed < DebounceMilliseconds;
+        }
+
+        /// <summary>
+        /// <para>打开（或提到前面）Revit Bridge 面板，并记下本次安装已经见过面板。Revit UI 线程。</para>
+        /// <para>Open the Revit Bridge panel (or bring it to the front) and record that this
+        /// install has seen it, so it never opens by itself again. Revit UI thread.</para>
+        /// </summary>
+        public static void OpenPanel(UIApplication uiApp)
+        {
+            BridgePanel.ShowPanel(uiApp.MainWindowHandle);
+            MarkPanelShown();
+        }
+
+        private static void MarkPanelShown()
+        {
+            _panelOpenedThisSession = true;
+            if (Settings.PanelShown)
+                return;
+            // When this cannot be saved (an unreadable file), the session flag still holds.
+            if (SettingsStore.Update(s => s.PanelShown = true))
+                ReloadSettingsSnapshot();
         }
 
         /// <summary>
@@ -299,26 +377,41 @@ namespace revit_mcp_plugin.Core
             ShowPanel(uiApp, fallbackDialog: origin == BridgeOrigin.Ribbon, reason);
         }
 
+        // Opens the panel by itself (first switch-on, failed start); a panel that cannot be
+        // shown falls back to one TaskDialog only from the button.
         private static void ShowPanel(UIApplication uiApp, bool fallbackDialog, string reason)
         {
             try
             {
-                BridgePanel.ShowPanel(uiApp.MainWindowHandle);
+                OpenPanel(uiApp);
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Trace.WriteLine($"revit-bridge: could not open the panel: {ex}");
-                if (fallbackDialog)
+                if (fallbackDialog && reason != null)
                     TaskDialog.Show("revitMCP", reason);
             }
         }
 
-        /// <summary>"Turn the bridge on when Revit starts": called once from ApplicationInitialized.</summary>
+        /// <summary>
+        /// <para>"启动 Revit 时自动开启"：由 ApplicationInitialized 调用一次。Revit 正在回放日志时跳过
+        /// （Application.IsJournalPlaying，2020 起都有），回放会自己点按钮。没有界面的 Revit 不会加载
+        /// IExternalApplication，无需另判。</para>
+        /// <para>"Turn the bridge on when Revit starts": called once from
+        /// ApplicationInitialized. Skipped while Revit replays a journal
+        /// (Application.IsJournalPlaying, in every year from 2020); the journal clicks the button
+        /// itself if it did. A Revit without a UI does not load an IExternalApplication at all.</para>
+        /// </summary>
         public static void AutoStart(UIApplication uiApp)
         {
             ServiceSettings settings = ReloadSettingsSnapshot();
             if (!settings.AutoStart || IsOn)
                 return;
+            if (uiApp.Application.IsJournalPlaying())
+            {
+                System.Diagnostics.Trace.WriteLine("revit-bridge: a journal is playing; auto start skipped.");
+                return;
+            }
             try
             {
                 TurnOn(uiApp, BridgeOrigin.AutoStart);
@@ -332,57 +425,121 @@ namespace revit_mcp_plugin.Core
             }
         }
 
-        /// <summary>Rebuild the running service's command registry (API context).</summary>
-        public static void ReloadCommands()
+        /// <summary>
+        /// <para>重建运行中服务的命令注册表（API 上下文）。返回 null 表示已重建，否则为原因。</para>
+        /// <para>Rebuild the running service's command registry (API context). null when
+        /// rebuilt, else why not.</para>
+        /// </summary>
+        public static string ReloadCommands()
         {
             if (SocketService.Instance.IsRunning)
-                SocketService.Instance.ReloadCommands();
+                return SocketService.Instance.ReloadCommands();
             if (WebSocketService.Instance.IsRunning)
-                WebSocketService.Instance.ReloadCommands();
+                return WebSocketService.Instance.ReloadCommands();
+            return null;
         }
 
         // ── From the panel or other threads ─────────────────────────────
 
         /// <summary>
-        /// <para>把工作交给 Revit UI 线程（外部事件）。任何线程都可调用。</para>
-        /// <para>Hand work to the Revit UI thread through the external event. Any thread.</para>
+        /// <para>把工作交给 Revit UI 线程（外部事件）。任何线程都可调用。Revit 不接受（Denied、TimedOut、
+        /// 异常）或外部事件不存在时返回 false，并撤回这次排队的工作，免得以后意外执行。</para>
+        /// <para>Hand work to the Revit UI thread through the external event. Any thread.
+        /// false when Revit did not take it (Denied, TimedOut, an exception) or there is no
+        /// external event; the request is then taken back out of the queue, so it cannot run
+        /// unexpectedly later. Pending (already raised) counts as taken: it runs with the
+        /// raise that is pending.</para>
         /// </summary>
-        /// <returns>false when the external event is not available.</returns>
         public static bool Post(BridgeRequest request)
         {
             ExternalEvent externalEvent = _event;
             if (externalEvent == null)
                 return false;
+            bool queued = false;
             lock (QueueLock)
             {
                 // Every run ends with a ribbon refresh, so a refresh behind other work is not queued twice.
                 if (request != BridgeRequest.RefreshRibbon || Pending.Count == 0)
+                {
                     Pending.Enqueue(request);
+                    queued = true;
+                }
             }
+
+            string refused;
             try
             {
                 ExternalEventRequest accepted = externalEvent.Raise();
-                if (accepted == ExternalEventRequest.Denied || accepted == ExternalEventRequest.TimedOut)
-                    System.Diagnostics.Trace.WriteLine($"revit-bridge: external event {accepted}; request {request} waits for the next one.");
+                refused = accepted == ExternalEventRequest.Denied || accepted == ExternalEventRequest.TimedOut
+                    ? accepted.ToString()
+                    : null;
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Trace.WriteLine($"revit-bridge: could not raise the external event: {ex.Message}");
-                return false;
+                refused = ex.Message;
             }
-            return true;
+
+            if (refused == null)
+                return true;
+
+            System.Diagnostics.Trace.WriteLine($"revit-bridge: Revit did not take {request} ({refused}).");
+            if (queued)
+                Withdraw(request);
+            return false;
+        }
+
+        private static void Withdraw(BridgeRequest request)
+        {
+            lock (QueueLock)
+            {
+                var kept = new List<BridgeRequest>(Pending);
+                int last = kept.LastIndexOf(request);
+                if (last < 0)
+                    return;
+                kept.RemoveAt(last);
+                Pending.Clear();
+                foreach (BridgeRequest item in kept)
+                    Pending.Enqueue(item);
+            }
         }
 
         /// <summary>
-        /// <para>面板改了"允许接入我的工具"（已写入配置）：立刻生效于服务端判定；运行中则重建命令注册表。</para>
+        /// <para>面板改了"允许接入我的工具"（已写入配置）：服务端判定立刻跟随；运行中则请 Revit 重建命令注册表。</para>
         /// <para>The panel changed "Allow my tools" (already saved): the service-side check
-        /// follows at once; a running bridge also rebuilds its command registry.</para>
+        /// follows at once; a running bridge also asks Revit to rebuild its command registry.</para>
         /// </summary>
-        public static void SetUserToolsAllowed(bool allowed)
+        /// <returns>
+        /// The reload ticket to wait for with <see cref="TryGetReloadResult"/>; 0 when the
+        /// bridge is off (nothing to reload); -1 when Revit did not take the reload request.
+        /// </returns>
+        public static int SetUserToolsAllowed(bool allowed)
         {
             UserToolAccess.Allowed = allowed;
             ReloadSettingsSnapshot();
-            Post(IsOn ? BridgeRequest.ReloadCommands : BridgeRequest.RefreshRibbon);
+            if (!IsOn)
+            {
+                Post(BridgeRequest.RefreshRibbon);
+                return 0;
+            }
+
+            int ticket = ++_reloadRequested;
+            if (Post(BridgeRequest.ReloadCommands))
+                return ticket;
+            return -1;
+        }
+
+        /// <summary>
+        /// <para>重建请求是否已由 Revit 执行；已执行时给出结果（null 表示成功，否则为原因）。</para>
+        /// <para>Whether Revit has run the reload with this ticket; when it has, its outcome
+        /// (null when rebuilt, else why not).</para>
+        /// </summary>
+        public static bool TryGetReloadResult(int ticket, out string error)
+        {
+            error = null;
+            if (_reloadDone < ticket)
+                return false;
+            error = _reloadError;
+            return true;
         }
 
         /// <summary>The panel saved settings: refresh what the button shows.</summary>
@@ -396,10 +553,12 @@ namespace revit_mcp_plugin.Core
         internal static void RunPending(UIApplication app)
         {
             List<BridgeRequest> work;
+            int reloadTarget;
             lock (QueueLock)
             {
                 work = new List<BridgeRequest>(Pending);
                 Pending.Clear();
+                reloadTarget = _reloadRequested;
             }
 
             foreach (BridgeRequest request in work)
@@ -417,14 +576,20 @@ namespace revit_mcp_plugin.Core
                                 TurnOff();
                             break;
                         case BridgeRequest.ReloadCommands:
-                            ReloadCommands();
+                            _reloadError = ReloadCommands();
+                            _reloadDone = reloadTarget;
                             break;
                     }
                 }
                 catch (Exception ex)
                 {
+                    if (request == BridgeRequest.ReloadCommands)
+                    {
+                        _reloadError = ex.Message;
+                        _reloadDone = reloadTarget;
+                    }
                     // TurnOn has already put its own reason there.
-                    if (request != BridgeRequest.TurnOn || _lastError == null)
+                    else if (request != BridgeRequest.TurnOn || _lastError == null)
                         _lastError = $"{request} failed: {ex.Message}";
                     System.Diagnostics.Trace.WriteLine($"revit-bridge: {request} failed: {ex}");
                 }
@@ -439,12 +604,21 @@ namespace revit_mcp_plugin.Core
             return string.Equals(settings?.Mode, "websocket", StringComparison.OrdinalIgnoreCase);
         }
 
+        // Revit UI thread only (every caller is), so SettingsReloaded handlers may touch WPF.
         private static ServiceSettings ReloadSettingsSnapshot()
         {
             string error;
             FrameworkConfig config = SettingsStore.LoadOrDefaults(out error);
             _settings = config.Settings;
             _settingsError = error;
+            try
+            {
+                SettingsReloaded?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Trace.WriteLine($"revit-bridge: a settings listener failed: {ex.Message}");
+            }
             return config.Settings;
         }
 
@@ -470,6 +644,7 @@ namespace revit_mcp_plugin.Core
                 Remote = remoteRunning || (!localRunning && IsRemote(settings)),
                 // Running: what the services check now. Off: what the next start will use.
                 UserToolsAllowed = localRunning || remoteRunning ? UserToolAccess.Allowed : settings.LocalToolsEnabled,
+                UserToolsIsDefault = settings.LocalToolsIsDefault,
                 MethodCount = localRunning ? tcp.RegisteredMethodCount : remoteRunning ? ws.RegisteredMethodCount : 0,
                 ConfigLoadError = localRunning ? tcp.ConfigLoadError : remoteRunning ? ws.ConfigLoadError : null,
                 SettingsError = _settingsError,
@@ -553,6 +728,8 @@ namespace revit_mcp_plugin.Core
         /// <summary>Remote mode: running remote, or off with remote configured.</summary>
         public bool Remote { get; set; }
         public bool UserToolsAllowed { get; set; }
+        /// <summary>"Allow my tools" was never set and follows the mode's default.</summary>
+        public bool UserToolsIsDefault { get; set; }
         public int MethodCount { get; set; }
         public string ConfigLoadError { get; set; }
         public string SettingsError { get; set; }
@@ -615,7 +792,8 @@ namespace revit_mcp_plugin.Core
             {
                 text.AppendLine($"Mode: local (this computer), port {s.LocalPort}");
             }
-            text.AppendLine(s.UserToolsAllowed ? "Allow my tools: on" : "Allow my tools: off");
+            text.AppendLine((s.UserToolsAllowed ? "Allow my tools: on" : "Allow my tools: off") +
+                            (s.UserToolsIsDefault ? $" (not set: the default for {(s.Remote ? "remote" : "local")} mode)" : ""));
             if (!s.IsOn && !string.IsNullOrWhiteSpace(s.LastError))
                 text.AppendLine(s.LastError);
             else if (!s.IsOn && s.RemoteUnpaired)
