@@ -45,12 +45,19 @@ namespace revit_mcp_plugin.Core
         private volatile string _unpairedDeviceId;
 
         private UIApplication _uiApp;
-        private ICommandRegistry _commandRegistry;
+        // Every command load fills a new registry and swaps it in whole (see SocketService).
+        private volatile ICommandRegistry _commandRegistry;
         private ILogger _logger;
         private CommandExecutor _commandExecutor;
+        private volatile string _configLoadError;
         private string _authToken;
         private bool _allowRemoteCodeExecution;
         private bool _confirmEachRun = true;
+        // What the running service enforces (read at Initialize), and why Start must refuse.
+        private ServiceSettings _runningSettings = new ServiceSettings();
+        private bool _startedWithLoadError;
+        private string _startRefusal;
+        private volatile string _lastStartError;
 
         // 代码执行类高危方法白名单（默认关闭，除非配置显式允许）
         // Code-execution class of high-risk methods (disabled by default unless config allows).
@@ -88,7 +95,7 @@ namespace revit_mcp_plugin.Core
 
         private WebSocketService()
         {
-            _commandRegistry = new RevitCommandRegistry();
+            _commandRegistry = new BridgeCommandRegistry();
             _logger = new Logger();
         }
 
@@ -98,6 +105,9 @@ namespace revit_mcp_plugin.Core
         public string DeviceId => _deviceId;
         public string ServerUrl => _serverUrl;
 
+        /// <summary>Why the last Start refused (an unreadable settings file), or null.</summary>
+        public string LastStartError => _lastStartError;
+
         /// <summary>
         /// <para>服务器已用 close 4003 拒绝本设备，重连已停止。</para>
         /// <para>The server refused this device with close 4003; reconnecting stopped.</para>
@@ -106,6 +116,31 @@ namespace revit_mcp_plugin.Core
 
         /// <summary>The deviceId the server refused, or null.</summary>
         public string UnpairedDeviceId => _unpairedDeviceId;
+
+        /// <summary>Why commandRegistry.json was not read at the last load, or null.</summary>
+        public string ConfigLoadError => _configLoadError;
+
+        /// <summary>Number of methods the current registry answers.</summary>
+        public int RegisteredMethodCount => SocketService.CountMethods(_commandRegistry);
+
+        /// <summary>
+        /// <para>连接状态变了（连上、断开、被拒、工作线程结束）。在工作线程上触发；订阅者自己切回 UI 线程。</para>
+        /// <para>The connection state changed (connected, lost, refused, worker ended). Raised
+        /// on the worker thread; subscribers move to the UI thread themselves.</para>
+        /// </summary>
+        public event Action StateChanged;
+
+        private void NotifyStateChanged()
+        {
+            try
+            {
+                StateChanged?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug("状态通知失败 / State notification failed: {0}", ex.Message);
+            }
+        }
 
         /// <summary>
         /// Initialize with Revit context and load commands.
@@ -121,28 +156,80 @@ namespace revit_mcp_plugin.Core
             string currentVersion = versionAdapter.GetRevitVersion();
             _logger.Info("WebSocket mode — Revit version: {0}", currentVersion);
 
-            _commandExecutor = new CommandExecutor(_commandRegistry, _logger);
-
             ConfigurationManager configManager = new ConfigurationManager(_logger);
             configManager.LoadConfiguration();
-
-            // 读取鉴权 token 与代码执行开关（可选增强，缺失时向后兼容）
-            // Read auth token and code-execution switch (optional; backward compatible).
-            _authToken = configManager.Config?.Settings?.Token;
-            _allowRemoteCodeExecution =
-                configManager.Config?.Settings?.AllowRemoteCodeExecution ?? false;
-            _confirmEachRun = configManager.Config?.Settings?.ConfirmEachRun ?? true;
+            ApplyConfiguration(configManager);
 
             // 确认对话框的外部事件必须在 Revit UI 线程上创建（Initialize 由 Ribbon 点击触发）。
             // The confirmation dialog's external event has to be created on the Revit UI
             // thread; Initialize() runs from the ribbon click.
             ConfirmationPrompt.Initialize();
 
-            CommandManager commandManager = new CommandManager(
-                _commandRegistry, _logger, configManager, _uiApp);
-            commandManager.LoadCommands();
+            LoadCommandRegistry(configManager, null);
 
             _logger.Info("WebSocket service initialized, commands loaded");
+        }
+
+        /// <summary>
+        /// <para>The Revit-free step of Initialize: load result, token, code-execution switch,
+        /// per-run confirmation. A settings file that exists but cannot be read makes Start
+        /// refuse (as the local service does).</para>
+        /// </summary>
+        internal void ApplyConfiguration(ConfigurationManager configManager)
+        {
+            ServiceSettings settings = configManager.Config?.Settings;
+            _configLoadError = configManager.LoadError;
+            _startedWithLoadError = configManager.LoadError != null;
+            _runningSettings = settings ?? new ServiceSettings();
+
+            // 读取鉴权 token 与代码执行开关（可选增强，缺失时向后兼容）
+            // Read auth token and code-execution switch (optional; backward compatible).
+            _authToken = settings?.Token;
+            _allowRemoteCodeExecution = settings?.AllowRemoteCodeExecution ?? false;
+            _confirmEachRun = settings?.ConfirmEachRun ?? true;
+            _startRefusal = configManager.FileUnreadable
+                ? configManager.LoadError + ", so the remote bridge does not start. Repair the file or re-run the installer."
+                : null;
+        }
+
+        /// <summary>
+        /// <para>Read the configuration again and rebuild the command registry (after
+        /// "Allow my tools" changed): official commands keep their instances, only user
+        /// commands are added or dropped. Token, allowRemoteCodeExecution and per-run
+        /// confirmation keep their values from the start. When the configuration cannot be
+        /// read the current registry stays. Call in a Revit API context.</para>
+        /// </summary>
+        /// <returns>null when reloaded, else why not.</returns>
+        public string ReloadCommands()
+        {
+            if (_uiApp == null) return "the bridge has not been started in this Revit session";
+
+            ConfigurationManager configManager = new ConfigurationManager(_logger);
+            configManager.LoadConfiguration();
+            // Same rule as the local service: no reload on an unreadable file, after a start on
+            // one, or when a security-relevant setting changed on disk.
+            string refusal = SocketService.ReloadRefusal(_startedWithLoadError, _runningSettings, configManager);
+            if (refusal != null)
+            {
+                _logger.Warning("未重载命令，保留已加载的命令 / Commands not reloaded; kept the loaded ones: {0}", refusal);
+                return refusal;
+            }
+            _configLoadError = null;
+            LoadCommandRegistry(configManager, _commandRegistry as BridgeCommandRegistry);
+            _logger.Info("WebSocket service commands reloaded");
+            return null;
+        }
+
+        private void LoadCommandRegistry(ConfigurationManager configManager, BridgeCommandRegistry reuseFrom)
+        {
+            var registry = new BridgeCommandRegistry();
+            CommandManager commandManager = new CommandManager(
+                registry, _logger, configManager, _uiApp, reuseFrom);
+            commandManager.LoadCommands();
+
+            _commandRegistry = registry;
+            UserToolAccess.Publish(registry);
+            _commandExecutor = new CommandExecutor(registry, _logger);
         }
 
         /// <summary>
@@ -155,6 +242,14 @@ namespace revit_mcp_plugin.Core
         public void Start(string serverUrl, string deviceId)
         {
             if (_isRunning) return;
+
+            _lastStartError = _startRefusal;
+            if (_startRefusal != null)
+            {
+                UserToolAccess.Unpublish(_commandRegistry);
+                _logger.Error("WebSocket 服务拒绝启动 / WebSocket service refused to start: {0}", _startRefusal);
+                return;
+            }
 
             _serverUrl = serverUrl.TrimEnd('/');
             _deviceId = deviceId;
@@ -184,6 +279,8 @@ namespace revit_mcp_plugin.Core
         {
             if (!_isRunning) return;
             _isRunning = false;
+            // Stopped: user_tools and the commands' registry view no longer show this registry.
+            UserToolAccess.Unpublish(_commandRegistry);
 
             try
             {
@@ -237,9 +334,15 @@ namespace revit_mcp_plugin.Core
                 if (_isUnpaired)
                 {
                     _isRunning = false;
+                    UserToolAccess.Unpublish(_commandRegistry);
                     _logger.Warning("设备未配对或已吊销，已停止重连 / Device unpaired or revoked; stopped reconnecting.");
+                    NotifyStateChanged();
                     break;
                 }
+
+                // 断开（或连接失败）：功能区按钮的提示随之更新。
+                // Disconnected (or could not connect): the ribbon button's tooltip follows.
+                NotifyStateChanged();
 
                 // Wait before reconnecting; Stop ends the wait at once.
                 _logger.Info($"Reconnecting in {_reconnectDelayMs / 1000}s...");
@@ -283,6 +386,7 @@ namespace revit_mcp_plugin.Core
                 endOfMessage: true,
                 cancellationToken: stopToken);
             _logger.Info("已发送鉴权握手 / Auth handshake sent");
+            NotifyStateChanged();
 
             // Receive loop
             var buffer = new byte[65536];
@@ -373,7 +477,7 @@ namespace revit_mcp_plugin.Core
                 _unpairedDeviceId = _deviceId;
                 _lastConnectionError =
                     $"Unpaired or revoked ({CloseUnpairedOrRevoked}){detail}. " +
-                    "Pair this Revit again in Settings > Connection.";
+                    "Pair this Revit again in the Revit Bridge panel (Shift+click the Revit Bridge button).";
                 _logger.Warning(
                     "服务器拒绝本设备（未配对/已吊销）/ Server refused this device (unpaired or revoked){0}",
                     detail);
@@ -431,11 +535,30 @@ namespace revit_mcp_plugin.Core
                         $"Method '{request.Method}' is disabled. Set 'allowRemoteCodeExecution' to enable.");
                 }
 
-                if (!_commandRegistry.TryGetCommand(request.Method, out var command))
+                ICommandRegistry registry = _commandRegistry;
+                if (!registry.TryGetCommand(request.Method, out var command))
                 {
+                    // A user command not loaded because "Allow my tools" is off: say so.
+                    string notLoaded = UserToolAccess.RefusalForMissing(registry, request.Method);
+                    if (notLoaded != null)
+                    {
+                        _logger.Warning("已拒绝用户工具 {0}（允许接入我的工具：关）\nRefused user tool {0} (Allow my tools: off).", request.Method);
+                        return CreateErrorResponse(request.Id, UserToolAccess.ErrorCode, notLoaded);
+                    }
                     return CreateErrorResponse(request.Id,
                         JsonRPCErrorCodes.MethodNotFound,
                         $"Method '{request.Method}' not found");
+                }
+
+                // "允许接入我的工具"关闭时，用户命令与固化工具的登记、运行在服务端拒绝。
+                // With "Allow my tools" off, user commands and solidified-tool register/run
+                // are refused here, before any prompt or command runs.
+                // Decided from the same registry snapshot the method was looked up in.
+                string refusal = UserToolAccess.RefusalFor(registry, request.Method, request.GetParamsObject);
+                if (refusal != null)
+                {
+                    _logger.Warning("已拒绝用户工具 {0}（允许接入我的工具：关）\nRefused user tool {0} (Allow my tools: off).", request.Method);
+                    return CreateErrorResponse(request.Id, UserToolAccess.ErrorCode, refusal);
                 }
 
                 // 逐次确认：服务器给即席代码的请求加 confirm 参数，设备侧弹窗询问设计师。

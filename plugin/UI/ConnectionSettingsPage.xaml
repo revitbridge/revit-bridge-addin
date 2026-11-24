@@ -14,42 +14,26 @@
         </Grid.RowDefinitions>
 
         <!-- Title -->
-        <StackPanel Grid.Row="0" Margin="0,0,0,15">
-            <TextBlock Text="Connection Settings" FontSize="22" FontWeight="SemiBold"/>
-            <TextBlock Text="Configure how the plugin connects to the MCP server"
-                       Foreground="#666666" Margin="0,5,0,0"/>
+        <StackPanel Grid.Row="0" Margin="0,0,0,10">
+            <TextBlock Text="Connection" FontSize="18" FontWeight="SemiBold"/>
+            <TextBlock Text="Where the bridge listens or connects. Changes apply the next time the bridge is turned on."
+                       Foreground="#666666" Margin="0,4,0,0" TextWrapping="Wrap"/>
         </StackPanel>
 
         <!-- Settings Form -->
-        <StackPanel Grid.Row="1" Margin="0,10,0,0">
+        <StackPanel Grid.Row="1" Margin="0,6,0,0">
             <!-- Connection Mode -->
-            <TextBlock Text="Connection Mode" FontWeight="SemiBold" Margin="0,0,0,8"/>
-            <StackPanel Orientation="Horizontal" Margin="0,0,0,20">
-                <RadioButton x:Name="TcpRadio" Content="TCP (Local Server)"
+            <TextBlock Text="Connect to" FontWeight="SemiBold" Margin="0,0,0,8"/>
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,14">
+                <RadioButton x:Name="TcpRadio" Content="Local (this computer)"
                              GroupName="Mode" IsChecked="True" Margin="0,0,30,0"
-                             Checked="Mode_Changed"/>
-                <RadioButton x:Name="WsRadio" Content="WebSocket (Cloud)"
+                             Checked="Mode_Changed"
+                             ToolTip="An MCP server or the web host on this computer connects to 127.0.0.1 on the port below (TCP, loopback only)."/>
+                <RadioButton x:Name="WsRadio" Content="Remote (cloud server)"
                              GroupName="Mode"
-                             Checked="Mode_Changed"/>
+                             Checked="Mode_Changed"
+                             ToolTip="This Revit connects out to a paired bridge server (WebSocket)."/>
             </StackPanel>
-
-            <!-- TCP Settings -->
-            <Border x:Name="TcpPanel" Padding="15" Background="#f9f9f9"
-                    BorderBrush="#e0e0e0" BorderThickness="1" CornerRadius="4"
-                    Margin="0,0,0,15">
-                <StackPanel>
-                    <TextBlock Text="TCP Settings" FontWeight="SemiBold" Margin="0,0,0,10"/>
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="80"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="Port:" VerticalAlignment="Center"/>
-                        <TextBox x:Name="PortTextBox" Grid.Column="1" Text="18080"
-                                 Width="100" HorizontalAlignment="Left" Padding="5,3"/>
-                    </Grid>
-                </StackPanel>
-            </Border>
 
             <!-- WebSocket Settings -->
             <Border x:Name="WsPanel" Padding="15" Background="#f9f9f9"
@@ -87,7 +71,7 @@
                         </StackPanel>
                     </Grid>
                     <TextBlock Foreground="#666666" TextWrapping="Wrap" Margin="100,0,0,8"
-                               Text="Pairing also allows the paired server to run ad-hoc code here (allowRemoteCodeExecution). Each run still asks first while the checkbox below is ticked. Unpairing, or the server revoking this device, turns it off again."/>
+                               Text="Pairing also allows the paired server to run ad-hoc code here (allowRemoteCodeExecution). Each run still asks first while 'Ask before each ad-hoc code run' (Advanced) is ticked. Unpairing, or the server revoking this device, turns it off again."/>
                     <TextBlock x:Name="PairStatusText" Text="" Foreground="#666" TextWrapping="Wrap"
                                Margin="100,0,0,10"/>
                     <Grid Margin="0,0,0,8">
@@ -99,7 +83,7 @@
                         <TextBlock x:Name="DeviceText" Grid.Column="1" Text="Not paired"
                                    VerticalAlignment="Center" Foreground="#666"/>
                     </Grid>
-                    <Grid Margin="0,0,0,10">
+                    <Grid Margin="0,0,0,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="100"/>
                             <ColumnDefinition Width="*"/>
@@ -109,25 +93,34 @@
                                  IsReadOnly="True" Background="#f0f0f0"
                                  ToolTip="Returned by the server when pairing; stored in Commands\commandRegistry.json as wsUrl"/>
                     </Grid>
+                </StackPanel>
+            </Border>
+
+            <!-- Advanced: port and per-run confirmation -->
+            <Expander x:Name="AdvancedExpander" Header="Advanced" IsExpanded="False" Margin="0,0,0,10">
+                <StackPanel Margin="20,8,0,0">
+                    <Grid Margin="0,0,0,10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="140"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Port (local mode):" VerticalAlignment="Center"/>
+                        <TextBox x:Name="PortTextBox" Grid.Column="1" Text="18080"
+                                 Width="100" HorizontalAlignment="Left" Padding="5,3"
+                                 ToolTip="TCP port on 127.0.0.1, 1 to 65535. Tell the MCP server the same port (REVIT_BRIDGE_PORT)."/>
+                    </Grid>
                     <CheckBox x:Name="ConfirmEachRunCheckBox" IsChecked="True"
                               Content="Ask before each ad-hoc code run (recommended)"
                               ToolTip="Shows a Yes/No dialog in Revit before send_code_to_revit requests that the server marks for confirmation. Capability packs never ask."/>
                 </StackPanel>
-            </Border>
+            </Expander>
 
-            <!-- Status -->
-            <Border Padding="10" Background="#f0f8ff" BorderBrush="#b0d4f1"
-                    BorderThickness="1" CornerRadius="4">
-                <StackPanel>
-                    <TextBlock Text="Current Status" FontWeight="SemiBold" Margin="0,0,0,5"/>
-                    <TextBlock x:Name="StatusText" Text="Not connected" Foreground="#666"
-                               TextWrapping="Wrap"/>
-                </StackPanel>
-            </Border>
+            <TextBlock x:Name="SaveStatusText" Text="" TextWrapping="Wrap" Foreground="#666666"
+                       Visibility="Collapsed" Margin="0,0,0,4"/>
         </StackPanel>
 
         <!-- Bottom Buttons -->
-        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,15,0,0">
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
             <Button Content="Save" Width="80" Height="30" Background="#0078D7" Foreground="White"
                     Click="SaveButton_Click"/>
         </StackPanel>

@@ -35,8 +35,11 @@
     local  - Revit listens on TCP 127.0.0.1:18080 for a local MCP server.
     remote - Revit connects out to a WebSocket bridge server (-Server required).
     Default: per Revit year, the mode of the install being updated, or local for
-    a fresh install. Port, logLevel and the pairing are kept as well; the command
-    list is the package's, every command enabled. Switching a paired install to
+    a fresh install. Port, logLevel and the pairing are kept as well, and so are
+    localTools ("Allow my tools"), autoStart and panelShown when the previous
+    install had them (without localTools, "Allow my tools" follows the mode: on
+    for local, off for remote); the command list is the package's, every command
+    enabled. Switching a paired install to
     local drops its device token (it would lock the TCP port) and, unless
     -AllowRemoteCode is given, allowRemoteCodeExecution; switching a local install
     to remote does not carry its TCP secret over.
@@ -67,8 +70,8 @@
     The installer redeems it at <Server>/api/v1/bridge/devices/redeem and
     stores the device id, device token and WebSocket URL it gets back, before
     any file is touched. Codes are single use and expire after 10 minutes. Omit
-    it to keep the pairing from a previous install, or pair later in
-    Settings > Connection.
+    it to keep the pairing from a previous install, or pair later in the Revit
+    Bridge panel (Shift+click the Revit Bridge button, Connection).
 
 .PARAMETER AllowRemoteCode
     Remote mode: allow send_code_to_revit, dry_run_code_in_revit,
@@ -78,8 +81,8 @@
     authorising that server; each ad-hoc run still asks in Revit while
     confirmEachRun is on. Pass -AllowRemoteCode:$false together with -Pair to
     pair without it. Without -Pair the previous setting is kept, or off for a
-    fresh install. Unpairing in Settings, or the server revoking the device,
-    switches it off again.
+    fresh install. Unpairing in the Revit Bridge panel, or the server revoking
+    the device, switches it off again.
 
 .PARAMETER RevitVersion
     Revit year(s) to install for: one year (-RevitVersion 2026), several
@@ -633,6 +636,27 @@ param(
         return $null
     }
 
+    function ConvertFrom-SettingFlag {
+        param($Value)
+        # A true/false setting read the way the add-in reads it: a JSON boolean; the
+        # strings "true" and "false" in any case, spaces trimmed; a number is true unless
+        # it is zero. Returns $true or $false, $null for "not set" (absent, null or ""),
+        # and the string "unreadable" for anything else (the caller decides what that means).
+        if ($null -eq $Value) { return $null }
+        if ($Value -is [bool]) { return $Value }
+        if ($Value -is [string]) {
+            $text = $Value.Trim()
+            if ($text -eq "") { return $null }
+            if ($text -ieq "true") { return $true }
+            if ($text -ieq "false") { return $false }
+            return "unreadable"
+        }
+        if ($Value -is [int] -or $Value -is [long] -or $Value -is [decimal] -or $Value -is [double]) {
+            return ($Value -ne 0)
+        }
+        return "unreadable"
+    }
+
     function Get-RevitExeYear {
         param([string]$Path)
         # The Revit year of a Revit.exe: from its file version (26.x is 2026), or, when
@@ -741,6 +765,9 @@ param(
         $existingAllowRemoteCode = $false
         $existingPort = 18080
         $existingLogLevel = "Info"
+        # Settings the add-in added after 0.5.0: carried over only when the previous
+        # install had them, so an install without "localTools" keeps following the mode.
+        $carriedFlags = [ordered]@{}
         $previousCommandNames = $null
         $previousDisabledNames = @()
         $previousRegistry = $registryDestination
@@ -752,8 +779,15 @@ param(
                     if ($null -ne $previous.settings.token) { $existingToken = [string]$previous.settings.token }
                     if ($null -ne $previous.settings.deviceId) { $existingDeviceId = [string]$previous.settings.deviceId }
                     if ($null -ne $previous.settings.wsUrl) { $existingWsUrl = [string]$previous.settings.wsUrl }
-                    if ($null -ne $previous.settings.confirmEachRun) { $existingConfirmEachRun = [bool]$previous.settings.confirmEachRun }
-                    if ($null -ne $previous.settings.allowRemoteCodeExecution) { $existingAllowRemoteCode = [bool]$previous.settings.allowRemoteCodeExecution }
+                    # Read as the add-in reads them ([bool]"false" would be $true in PowerShell).
+                    # A value that is not clearly false keeps the confirmation on; one that is
+                    # not clearly true keeps remote code execution off.
+                    $confirmValue = ConvertFrom-SettingFlag $previous.settings.confirmEachRun
+                    if ($confirmValue -is [bool]) { $existingConfirmEachRun = $confirmValue }
+                    elseif ($confirmValue -eq "unreadable") { Write-Warning "Ignored the previous confirmEachRun '$($previous.settings.confirmEachRun)' (not true or false); it stays on." }
+                    $remoteCodeValue = ConvertFrom-SettingFlag $previous.settings.allowRemoteCodeExecution
+                    if ($remoteCodeValue -is [bool]) { $existingAllowRemoteCode = $remoteCodeValue }
+                    elseif ($remoteCodeValue -eq "unreadable") { Write-Warning "Ignored the previous allowRemoteCodeExecution '$($previous.settings.allowRemoteCodeExecution)' (not true or false); it stays off." }
                     if ($null -ne $previous.settings.port) {
                         $portNumber = 0
                         if ([int]::TryParse([string]$previous.settings.port, [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, [ref]$portNumber) -and
@@ -766,6 +800,19 @@ param(
                     # The add-in does not read logLevel yet; an unknown value is replaced quietly.
                     if (@("Debug", "Info", "Warning", "Error") -contains [string]$previous.settings.logLevel) {
                         $existingLogLevel = [string]$previous.settings.logLevel
+                    }
+                    foreach ($flag in @("localTools", "autoStart", "panelShown")) {
+                        $flagValue = ConvertFrom-SettingFlag $previous.settings.$flag
+                        if ($null -eq $flagValue) { continue }
+                        if ($flagValue -is [bool]) {
+                            $carriedFlags[$flag] = $flagValue
+                        } else {
+                            # The add-in reads an unreadable value as false (for localTools: off,
+                            # not the mode's default; for the others: their default, false), so
+                            # it is written as false.
+                            Write-Warning "Read the previous $flag '$($previous.settings.$flag)' as false (not true or false)."
+                            $carriedFlags[$flag] = $false
+                        }
                     }
                 }
                 if ($null -ne $previous.commands) {
@@ -815,7 +862,7 @@ param(
                 $existingAllowRemoteCode = $false
                 $remoteCodeNote = " Remote code execution (allowRemoteCodeExecution) was switched off with it."
             }
-            Write-Warning "Switched from remote to local mode: the device token of the pairing ($deviceId) was not kept, because in local mode it would lock the TCP port.$remoteCodeNote To use the bridge server again, pair again: re-run with -RevitVersion $Year -Mode remote -Server https://<host> -Pair XXXX-XXXX, or enter a new code in Settings > Connection."
+            Write-Warning "Switched from remote to local mode: the device token of the pairing ($deviceId) was not kept, because in local mode it would lock the TCP port.$remoteCodeNote To use the bridge server again, pair again: re-run with -RevitVersion $Year -Mode remote -Server https://<host> -Pair XXXX-XXXX, or enter a new code in the Revit Bridge panel (Shift+click the Revit Bridge button, Connection)."
         }
 
         # The other way round: a local install's token is its TCP secret, not a device
@@ -824,7 +871,7 @@ param(
         if ($effectiveMode -eq "remote" -and $existingMode -ne "remote" -and -not [string]::IsNullOrEmpty($existingToken) -and -not $pairGiven) {
             $effectiveToken = ""
             $notPairedWarned = $true
-            Write-Warning "Switched from local to remote mode: the local TCP secret (token) was not kept, because it is not a device token. This Revit is not paired yet: re-run with -RevitVersion $Year -Server https://<host> -Pair XXXX-XXXX, or enter a pairing code in Settings > Connection."
+            Write-Warning "Switched from local to remote mode: the local TCP secret (token) was not kept, because it is not a device token. This Revit is not paired yet: re-run with -RevitVersion $Year -Server https://<host> -Pair XXXX-XXXX, or enter a pairing code in the Revit Bridge panel (Shift+click the Revit Bridge button, Connection)."
         }
 
         if ($pairGiven) {
@@ -834,7 +881,7 @@ param(
             $wsUrl = $paired.WsUrl
         } elseif ($effectiveMode -eq "remote" -and -not $notPairedWarned) {
             if ([string]::IsNullOrWhiteSpace($deviceId) -or [string]::IsNullOrWhiteSpace($effectiveToken) -or [string]::IsNullOrWhiteSpace($wsUrl)) {
-                Write-Warning "This Revit is not paired yet. Re-run with -RevitVersion $Year -Pair XXXX-XXXX, or enter a pairing code in Settings > Connection."
+                Write-Warning "This Revit is not paired yet. Re-run with -RevitVersion $Year -Pair XXXX-XXXX, or enter a pairing code in the Revit Bridge panel (Shift+click the Revit Bridge button, Connection)."
             } else {
                 Write-Host "Kept the pairing from the previous install ($deviceId)."
             }
@@ -864,6 +911,9 @@ param(
             token = $effectiveToken
             confirmEachRun = $existingConfirmEachRun
             allowRemoteCodeExecution = $effectiveAllowRemoteCode
+        }
+        foreach ($flag in $carriedFlags.Keys) {
+            $settings | Add-Member -NotePropertyName $flag -NotePropertyValue $carriedFlags[$flag]
         }
 
         if ($null -eq $config.settings) {
@@ -1003,6 +1053,11 @@ param(
             }
             Write-Host "Confirm each run:    $existingConfirmEachRun"
             Write-Host "Remote code allowed: $effectiveAllowRemoteCode"
+            if ($carriedFlags.Contains("localTools")) {
+                Write-Host "Allow my tools:      $($carriedFlags['localTools']) (kept from the previous install)"
+            } else {
+                Write-Host "Allow my tools:      not set, follows the mode ($(if ($effectiveMode -eq 'local') { 'on' } else { 'off' }))"
+            }
             # The Command sets page switches a command off by removing it from the list, which
             # cannot be told apart from a command that is new in this package, so the
             # package's list is installed as it is, every command enabled. Name the commands
@@ -1013,9 +1068,9 @@ param(
                 $offBefore = @($packageNames | Where-Object { $previousDisabledNames -contains $_ })
                 if ($notBefore.Count -gt 0 -or $offBefore.Count -gt 0) {
                     Write-Host "Commands:            the package's list was installed with every command enabled."
-                    if ($notBefore.Count -gt 0) { Write-Host "  Not in the previous list (new, or switched off in Settings > Command sets): $($notBefore -join ', ')" }
+                    if ($notBefore.Count -gt 0) { Write-Host "  Not in the previous list (new, or switched off under Advanced: commands in the Revit Bridge panel): $($notBefore -join ', ')" }
                     if ($offBefore.Count -gt 0) { Write-Host "  Switched off in the previous list (enabled: false): $($offBefore -join ', ')" }
-                    Write-Host "  Switch them off again in Settings > Command sets if you do not want them."
+                    Write-Host "  Switch them off again under Advanced: commands in the Revit Bridge panel (Shift+click the Revit Bridge button) if you do not want them."
                 }
             }
             Write-Host "RevitMCPPlugin.dll SHA-256:     $(Get-FileSha256 $mainDllDestination)"
@@ -1031,7 +1086,7 @@ param(
                 Write-Warning "The Revit $Year build is compiled but has not been tested in a real Revit $Year yet."
             }
             Write-Host ""
-            Write-Host "Start Revit $Year, then click 'Revit MCP Switch' on the 'Revit MCP Plugin' ribbon panel."
+            Write-Host "Start Revit $Year, then click 'Revit Bridge' on the 'Revit MCP Plugin' ribbon panel (Add-Ins tab) to turn the bridge on; Shift+click it for its settings."
         } catch {
             Write-Warning "The add-in was installed, but the summary could not be completed: $($_.Exception.Message)"
         }
@@ -1065,7 +1120,7 @@ param(
         }
         foreach ($port in @($byPort.Keys | Sort-Object)) {
             if ($byPort[$port].Count -gt 1) {
-                Write-Host "Port $port is used by the local installs for Revit $($byPort[$port] -join ', '): only one of them can have the bridge switched on at a time (give one another port under Settings > Connection to run them side by side)."
+                Write-Host "Port $port is used by the local installs for Revit $($byPort[$port] -join ', '): only one of them can have the bridge switched on at a time (give one another port in the Revit Bridge panel, Connection > Advanced, to run them side by side)."
             }
         }
     }
