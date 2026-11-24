@@ -104,11 +104,8 @@ namespace RevitMCPCommandSet.Utils
         /// <summary>Every failure recorded, in the order Revit posted them; the same failure seen again is not repeated.</summary>
         public List<CommitFailureRecord> Records { get; } = new List<CommitFailureRecord>();
 
-        /// <summary>An error-level failure was posted, or reading the failures failed; the transaction was rolled back.</summary>
+        /// <summary>An error-level failure was posted, or reading the failures or deleting a warning failed; the transaction was rolled back.</summary>
         public bool HadError { get; private set; }
-
-        /// <summary>At least one warning was recorded.</summary>
-        public bool HasWarnings => Records.Exists(record => !record.IsError);
 
         /// <summary>Decide one round. Never throws.</summary>
         public CommitFailureDecision Process(ICommitFailureRound round)
@@ -129,12 +126,24 @@ namespace RevitMCPCommandSet.Utils
 
                 if (!error)
                 {
-                    // 只有警告：全部删除，提交照常进行，不显示给用户。
-                    // Warnings only: delete them all; the commit goes on and nothing is shown.
-                    foreach (ICommitPostedFailure failure in failures)
+                    // 只有警告：全部删除，提交照常进行，不显示给用户。删除出错时按错误处理、静默回滚，
+                    // 记下的原因说的是删除，不是读取。
+                    // Warnings only: delete them all; the commit goes on and nothing is shown. When a
+                    // deletion fails, treat it as an error and roll back silently; the recorded reason
+                    // names the deletion, not the reading.
+                    try
                     {
-                        if (failure.Level == CommitFailureLevel.Warning)
-                            round.DeleteWarning(failure);
+                        foreach (ICommitPostedFailure failure in failures)
+                        {
+                            if (failure.Level == CommitFailureLevel.Warning)
+                                round.DeleteWarning(failure);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        HadError = true;
+                        AddProblem("deleting a warning failed: " + Describe(ex));
+                        return RollBackSilently(round);
                     }
                     return CommitFailureDecision.Continue;
                 }
