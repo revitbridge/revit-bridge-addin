@@ -2,6 +2,7 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using RevitMCPCommandSet.Models.Architecture;
 using RevitMCPCommandSet.Models.Common;
+using RevitMCPCommandSet.Utils;
 using RevitMCPSDK.API.Interfaces;
 
 namespace RevitMCPCommandSet.Services
@@ -66,6 +67,9 @@ namespace RevitMCPCommandSet.Services
                 using (Transaction trans = new Transaction(doc, "Create Grid System"))
                 {
                     trans.Start();
+                    // 提交时的警告记下后删除、错误静默回滚，不弹 Revit 的失败对话框（CommitFailureGuard）。
+                    // Commit-time warnings recorded and deleted, errors rolled back silently, no Revit failure dialog.
+                    CommitFailureGuard guard = CommitFailureGuard.Install(trans, "create_grid");
 
                     // Create X-axis grids (vertical lines, parallel to Y-axis)
                     List<double> xPositions = GeneratePositions(
@@ -179,7 +183,7 @@ namespace RevitMCPCommandSet.Services
                         });
                     }
 
-                    trans.Commit();
+                    guard.CommitOrThrow(trans);
                 }
 
                 int renamedCount = createdGrids.Count(g => g.WasRenamed);

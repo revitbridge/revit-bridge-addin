@@ -100,6 +100,9 @@ public class CreateDimensionEventHandler : IExternalEventHandler, IWaitableExter
                 using (var transaction = new Transaction(Doc, "Create Dimension"))
                 {
                     transaction.Start();
+                    // 提交时的警告记下后删除、错误静默回滚，不弹 Revit 的失败对话框（CommitFailureGuard）。
+                    // Commit-time warnings recorded and deleted, errors rolled back silently, no Revit failure dialog.
+                    CommitFailureGuard guard = CommitFailureGuard.Install(transaction, "create_dimensions");
 
                     try
                     {
@@ -193,11 +196,14 @@ public class CreateDimensionEventHandler : IExternalEventHandler, IWaitableExter
                             createdDimensionIds.Add(dimension.Id.GetIntValue());
                         }
 
-                        transaction.Commit();
+                        guard.CommitOrThrow(transaction);
                     }
                     catch
                     {
-                        transaction.RollBack();
+                        // 提交被拒时事务已结束，不能再回滚。
+                        // A rejected commit has already ended the transaction; it cannot be rolled back again.
+                        if (transaction.GetStatus() == TransactionStatus.Started)
+                            transaction.RollBack();
                         throw;
                     }
                 }

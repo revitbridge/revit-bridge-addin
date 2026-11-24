@@ -7,33 +7,6 @@ using RevitMCPSDK.API.Interfaces;
 namespace RevitMCPCommandSet.Services
 {
     /// <summary>
-    /// Failure preprocessor that handles duplicate room number warnings during tagging.
-    /// This suppresses warnings that might occur if the model has rooms with conflicting numbers.
-    /// </summary>
-    public class TagRoomFailurePreprocessor : IFailuresPreprocessor
-    {
-        public FailureProcessingResult PreprocessFailures(FailuresAccessor failuresAccessor)
-        {
-            IList<FailureMessageAccessor> failures = failuresAccessor.GetFailureMessages();
-
-            foreach (FailureMessageAccessor failure in failures)
-            {
-                // Handle room-related warnings by deleting them
-                string description = failure.GetDescriptionText();
-                if (description.Contains("Number") ||
-                    description.Contains("number") ||
-                    description.Contains("duplicate") ||
-                    description.Contains("Duplicate"))
-                {
-                    failuresAccessor.DeleteWarning(failure);
-                }
-            }
-
-            return FailureProcessingResult.Continue;
-        }
-    }
-
-    /// <summary>
     /// Event handler for creating room tags in Revit
     /// </summary>
     public class TagRoomsEventHandler : IExternalEventHandler, IWaitableExternalEventHandler
@@ -199,14 +172,13 @@ namespace RevitMCPCommandSet.Services
 
                 using (Transaction tran = new Transaction(_doc, "Tag Rooms"))
                 {
-                    // Set up failure handling to completely suppress any room-related warnings
-                    FailureHandlingOptions failureOptions = tran.GetFailureHandlingOptions();
-                    failureOptions.SetFailuresPreprocessor(new TagRoomFailurePreprocessor());
-                    failureOptions.SetClearAfterRollback(true);
-                    failureOptions.SetDelayedMiniWarnings(false);
-                    tran.SetFailureHandlingOptions(failureOptions);
-
                     tran.Start();
+                    // 提交时的每条警告记下后删除、错误静默回滚，不弹 Revit 的失败对话框（CommitFailureGuard）；
+                    // 它取代了按描述文字匹配 "number"/"duplicate" 只删部分警告的旧预处理器。
+                    // Every commit-time warning is recorded and deleted, errors roll back silently, no
+                    // Revit failure dialog (CommitFailureGuard); it replaces the former preprocessor that
+                    // deleted only the warnings whose text matched "number"/"duplicate".
+                    CommitFailureGuard guard = CommitFailureGuard.Install(tran, "tag_rooms");
 
                     // Find the room tag type
                     FamilySymbol roomTagType = FindRoomTagType(_doc);
@@ -307,7 +279,7 @@ namespace RevitMCPCommandSet.Services
                         }
                     }
 
-                    tran.Commit();
+                    guard.CommitOrThrow(tran);
 
                     string resultMessage = skippedRooms.Count > 0
                         ? $"Created {createdTags.Count} tags. Skipped {skippedRooms.Count} rooms that already had tags."

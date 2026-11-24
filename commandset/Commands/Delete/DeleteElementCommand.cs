@@ -42,7 +42,10 @@ namespace RevitMCPCommandSet.Commands.Delete
                         }
                         else
                         {
-                            throw new Exception("删除元素失败");
+                            // 处理器给出原因时报告原因（如"提交被 Revit 拒绝: ..."），外层 catch 再加"删除元素失败: "。
+                            // Report the handler's reason when it gives one (such as "提交被 Revit 拒绝: ...");
+                            // the catch below prefixes "删除元素失败: ".
+                            throw new Exception(string.IsNullOrEmpty(_handler.ErrorMessage) ? "删除元素失败" : _handler.ErrorMessage);
                         }
                     }
                     else

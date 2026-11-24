@@ -159,6 +159,9 @@ namespace RevitMCPCommandSet.Services
                 using (Transaction transaction = new Transaction(doc, "Color Splash"))
                 {
                     transaction.Start();
+                    // 提交时的警告记下后删除、错误静默回滚，不弹 Revit 的失败对话框（CommitFailureGuard）。
+                    // Commit-time warnings recorded and deleted, errors rolled back silently, no Revit failure dialog.
+                    CommitFailureGuard guard = CommitFailureGuard.Install(transaction, "color_splash");
 
                     // Get solid fill pattern
                     ElementId solidFillPatternId = GetSolidFillPatternId();
@@ -201,7 +204,7 @@ namespace RevitMCPCommandSet.Services
                         });
                     }
 
-                    transaction.Commit();
+                    guard.CommitOrThrow(transaction);
 
                     ColoringResults = new
                     {

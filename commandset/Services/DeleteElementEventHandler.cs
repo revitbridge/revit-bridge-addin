@@ -12,6 +12,13 @@ namespace RevitMCPCommandSet.Services
 
         // 成功删除的元素数量
         public int DeletedCount { get; private set; }
+
+        /// <summary>
+        /// <para>失败的原因（如"提交被 Revit 拒绝: ..."），由命令接在"删除元素失败: "之后报告；没有原因时为 null。</para>
+        /// <para>Why it failed (such as "提交被 Revit 拒绝: ..."); the command reports it after
+        /// "删除元素失败: ". Null when there is no reason to give.</para>
+        /// </summary>
+        public string ErrorMessage { get; private set; }
         // 状态同步对象
         public bool TaskCompleted { get; private set; }
         private readonly ManualResetEvent _resetEvent = new ManualResetEvent(false);
@@ -25,6 +32,7 @@ namespace RevitMCPCommandSet.Services
         }
         public void Execute(UIApplication app)
         {
+            ErrorMessage = null;
             try
             {
                 var doc = app.ActiveUIDocument.Document;
@@ -83,6 +91,7 @@ namespace RevitMCPCommandSet.Services
                     if (confirm != TaskDialogResult.Yes)
                     {
                         IsSuccess = false;
+                        ErrorMessage = "用户在确认框中没有选择继续";
                         return;
                     }
 
@@ -91,18 +100,27 @@ namespace RevitMCPCommandSet.Services
                         try
                         {
                             transaction.Start();
+                            // 提交时的警告（如删掉房间边界墙后的"多个房间在同一封闭区域"）记下后删除、
+                            // 错误静默回滚，不弹 Revit 的失败对话框（CommitFailureGuard）。
+                            // Commit-time warnings (such as "Multiple Rooms are in the same enclosed region"
+                            // after deleting a room-bounding wall) recorded and deleted, errors rolled back
+                            // silently, no Revit failure dialog (CommitFailureGuard).
+                            CommitFailureGuard guard = CommitFailureGuard.Install(transaction, "delete_element");
 
                             // 批量删除元素
                             ICollection<ElementId> deletedIds = doc.Delete(elementIdsToDelete);
                             DeletedCount = deletedIds.Count;
 
-                            transaction.Commit();
+                            guard.CommitOrThrow(transaction);
                         }
                         catch
                         {
-                            // 异常时显式回滚，避免事务处于未结束状态
-                            // Roll back explicitly on error so the transaction is not left open.
-                            if (transaction.HasStarted() && !transaction.HasEnded())
+                            // 异常时显式回滚，避免事务处于未结束状态；提交没有返回 Committed 时事务已不是
+                            // Started（RolledBack 已结束，Pending 不能回滚），不再回滚。
+                            // Roll back explicitly on error so the transaction is not left open. When
+                            // Commit did not return Committed the transaction is no longer Started
+                            // (RolledBack has ended, Pending cannot be rolled back) and is left alone.
+                            if (transaction.GetStatus() == TransactionStatus.Started)
                                 transaction.RollBack();
                             throw;
                         }
@@ -113,12 +131,14 @@ namespace RevitMCPCommandSet.Services
                 {
                     TaskDialog.Show("错误", "没有有效的元素可以删除");
                     IsSuccess = false;
+                    ErrorMessage = "没有有效的元素可以删除";
                 }
             }
             catch (Exception ex)
             {
                 TaskDialog.Show("错误", "删除元素失败: " + ex.Message);
                 IsSuccess = false;
+                ErrorMessage = ex.Message;
             }
             finally
             {

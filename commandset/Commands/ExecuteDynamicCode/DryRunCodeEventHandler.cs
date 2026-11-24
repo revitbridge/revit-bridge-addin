@@ -211,10 +211,7 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
                     // 3. Failure handling: warnings are recorded and deleted; errors are recorded and
                     //    the transaction rolls back silently, without a dialog. Clear-after-rollback
                     //    also covers the rollback after the code threw.
-                    FailureHandlingOptions options = transaction.GetFailureHandlingOptions();
-                    options.SetFailuresPreprocessor(recorder);
-                    options.SetClearAfterRollback(true);
-                    transaction.SetFailureHandlingOptions(options);
+                    recorder.InstallOn(transaction);
 
                     try
                     {
@@ -363,124 +360,39 @@ namespace RevitMCPCommandSet.Commands.ExecuteDynamicCode
         }
 
         /// <summary>
-        /// <para>记录本事务的每条失败；没有错误时删除警告继续提交，有错误时静默回滚。</para>
+        /// <para>记录本事务的每条失败；没有错误时删除警告继续提交，有错误时静默回滚。决定由共用的
+        /// CommitFailureGuard 作出（send_code_to_revit 与其余改模型的命令用同一个），这里只把记录给成
+        /// 试跑的回复形状（DryRunFailure）。加载器测试（AddinTestSession）也用它。</para>
         /// <para>Records every failure of the transaction; with no error it deletes the warnings and
-        /// lets the commit continue, with an error it rolls back silently.</para>
+        /// lets the commit continue, with an error it rolls back silently. The shared
+        /// CommitFailureGuard takes the decision; this class only gives the records in the dry run's
+        /// reply shape (DryRunFailure). The add-in test loader (AddinTestSession) uses it too.</para>
         /// </summary>
         internal sealed class FailureRecorder : IFailuresPreprocessor
         {
-            private readonly HashSet<string> _seen = new HashSet<string>(StringComparer.Ordinal);
+            private readonly CommitFailureGuard _guard = new CommitFailureGuard("dry run");
 
-            public List<DryRunFailure> Failures { get; } = new List<DryRunFailure>();
+            /// <summary>Every recorded failure in the dry run's reply shape; a new list on each read.</summary>
+            public List<DryRunFailure> Failures => _guard.Log.Records
+                .Select(record => new DryRunFailure
+                {
+                    Severity = record.IsError ? "Error" : "Warning",
+                    Text = record.Text,
+                    ElementIds = new List<long>(record.ElementIds),
+                })
+                .ToList();
 
-            public bool HadError { get; private set; }
+            public bool HadError => _guard.Log.HadError;
+
+            /// <summary>Install the shared failure handling on the dry run's transaction.</summary>
+            public void InstallOn(Transaction transaction)
+            {
+                _guard.InstallOn(transaction);
+            }
 
             public FailureProcessingResult PreprocessFailures(FailuresAccessor failuresAccessor)
             {
-                try
-                {
-                    IList<FailureMessageAccessor> messages = failuresAccessor.GetFailureMessages();
-                    bool error = false;
-                    foreach (FailureMessageAccessor message in messages)
-                    {
-                        FailureSeverity severity = message.GetSeverity();
-                        if (severity == FailureSeverity.None)
-                            continue;
-                        if (severity != FailureSeverity.Warning)
-                            error = true;
-                        Record(message, severity);
-                    }
-
-                    if (!error)
-                    {
-                        // 只有警告：全部删除，提交照常进行，不显示给用户。
-                        // Warnings only: delete them all; the commit goes on and nothing is shown.
-                        foreach (FailureMessageAccessor message in messages)
-                        {
-                            if (message.GetSeverity() == FailureSeverity.Warning)
-                                failuresAccessor.DeleteWarning(message);
-                        }
-                        return FailureProcessingResult.Continue;
-                    }
-
-                    HadError = true;
-                    return RollBackSilently(failuresAccessor);
-                }
-                catch (Exception ex)
-                {
-                    // 读失败本身出错：按错误处理，静默回滚，并把原因记成一条错误。
-                    // Reading the failures failed: treat it as an error, roll back silently and
-                    // record the reason as one error.
-                    HadError = true;
-                    Failures.Add(new DryRunFailure
-                    {
-                        Severity = "Error",
-                        Text = "dry run: reading Revit's failures failed: " + CodeExecutor.FormatRuntimeError(ex),
-                    });
-                    return RollBackSilently(failuresAccessor);
-                }
-            }
-
-            private FailureProcessingResult RollBackSilently(FailuresAccessor failuresAccessor)
-            {
-                // ProceedWithRollBack 要配合"回滚后清除失败"才不会把失败交给用户（RevitAPI 对 ProceedWithRollBack 的说明）。
-                // ProceedWithRollBack must come with "clear after rollback", or the failures may still
-                // be delivered to the user (RevitAPI remarks on ProceedWithRollBack).
-                try
-                {
-                    FailureHandlingOptions options = failuresAccessor.GetFailureHandlingOptions();
-                    options.SetClearAfterRollback(true);
-                    failuresAccessor.SetFailureHandlingOptions(options);
-                }
-                catch (Exception ex)
-                {
-                    // 事务上已预先设了同一选项；这里失败只记一条，不改变回滚。
-                    // The transaction already carries the same option; a failure here is recorded
-                    // and does not change the rollback.
-                    Failures.Add(new DryRunFailure
-                    {
-                        Severity = "Error",
-                        Text = "dry run: setting clear-after-rollback failed: " + CodeExecutor.FormatRuntimeError(ex),
-                    });
-                }
-                return FailureProcessingResult.ProceedWithRollBack;
-            }
-
-            private void Record(FailureMessageAccessor message, FailureSeverity severity)
-            {
-                var ids = new List<long>();
-                var seenIds = new HashSet<long>();
-                AddIds(ids, seenIds, message.GetFailingElementIds());
-                AddIds(ids, seenIds, message.GetAdditionalElementIds());
-
-                var failure = new DryRunFailure
-                {
-                    Severity = severity == FailureSeverity.Warning ? "Warning" : "Error",
-                    Text = message.GetDescriptionText() ?? string.Empty,
-                    ElementIds = ids,
-                };
-
-                // 预处理器可能被调用不止一次；同一条只记一次。
-                // The preprocessor may be called more than once; record each failure once.
-                string key = failure.Severity + "\n" + failure.Text + "\n" + string.Join(",", ids);
-                if (_seen.Add(key))
-                    Failures.Add(failure);
-            }
-
-            private static void AddIds(List<long> ids, HashSet<long> seen, ICollection<ElementId> source)
-            {
-                if (source == null)
-                    return;
-                foreach (ElementId id in source)
-                {
-                    if (ids.Count >= DryRunFailure.MaxElementIds)
-                        return;
-                    if (id is null || id == ElementId.InvalidElementId)
-                        continue;
-                    long value = id.GetValue();
-                    if (seen.Add(value))
-                        ids.Add(value);
-                }
+                return _guard.PreprocessFailures(failuresAccessor);
             }
         }
     }
