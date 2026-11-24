@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -38,7 +39,7 @@ namespace revit_mcp_plugin.Configuration
                 if (File.Exists(configPath))
                 {
                     string json = File.ReadAllText(configPath);
-                    return JsonConvert.DeserializeObject<FrameworkConfig>(json) ?? new FrameworkConfig();
+                    return RegistryJson.Deserialize<FrameworkConfig>(json) ?? new FrameworkConfig();
                 }
                 return new FrameworkConfig();
             }
@@ -70,7 +71,7 @@ namespace revit_mcp_plugin.Configuration
                             error = "commandRegistry.json is empty";
                         else
                         {
-                            config = JsonConvert.DeserializeObject<FrameworkConfig>(json);
+                            config = RegistryJson.Deserialize<FrameworkConfig>(json);
                             if (config == null)
                                 error = "commandRegistry.json does not contain a JSON object";
                         }
@@ -121,25 +122,25 @@ namespace revit_mcp_plugin.Configuration
         /// <para>UpdateSettings 的文本核心：输入原文件内容，返回改过 settings 的新内容。</para>
         /// <para>Text core of <see cref="UpdateSettings"/>: takes the file's text and returns
         /// it with the changed settings merged into its "settings" object.</para>
-        /// <para>Only a setting whose value the change altered is written, into the key as
-        /// the file spells it (keys are read ignoring case). So "token": 12345 stays the
-        /// number 12345 when "localTools" is saved, and a value this version could not read
-        /// ("port": "abc") stays as it is unless the change sets that setting itself.</para>
+        /// <para>Written are the settings the change assigned (even to the value already
+        /// read: a user's explicit choice replaces a value this version could not read) and
+        /// any whose value it altered, into the key as the file spells it (keys are read
+        /// ignoring case). Everything else keeps its own JSON value: "token": 12345 stays the
+        /// number 12345 when "localTools" is saved, and "port": "abc" stays unless the change
+        /// sets the port. The settings object written is the one the reader uses: the last
+        /// top-level property named "settings" in any case; a second one is never added.</para>
         /// </summary>
         public static string ApplySettingsChange(string registryJson, Action<ServiceSettings> change, out ServiceSettings written)
         {
             JObject root = ParseRegistryObject(registryJson);
-            JObject settings = root["settings"] as JObject;
-            if (settings == null)
-            {
-                settings = new JObject();
-                root["settings"] = settings;
-            }
+            JObject settings = LastObjectProperty(root, "settings");
 
             ServiceSettings current = settings.ToObject<ServiceSettings>() ?? new ServiceSettings();
             JObject before = JObject.FromObject(current);
+            current.BeginTracking();
             change(current);
             JObject after = JObject.FromObject(current);
+            ICollection<string> assigned = current.AssignedKeys;
 
             var names = new List<string>();
             foreach (JProperty property in before.Properties().Concat(after.Properties()))
@@ -152,7 +153,7 @@ namespace revit_mcp_plugin.Configuration
             {
                 JToken oldValue = before[name];
                 JToken newValue = after[name];
-                if (JToken.DeepEquals(oldValue, newValue))
+                if (!assigned.Contains(name) && JToken.DeepEquals(oldValue, newValue))
                     continue;
 
                 // The converter reads keys ignoring case and the last one wins.
@@ -167,7 +168,27 @@ namespace revit_mcp_plugin.Configuration
             }
 
             written = current;
-            return root.ToString(Formatting.Indented);
+            return RegistryJson.ToText(root);
+        }
+
+        // The reader (Json.NET, keys matched ignoring case) takes the last top-level property
+        // with this name; that is the one written. Not an object: replaced by one, same key.
+        // Missing: added.
+        private static JObject LastObjectProperty(JObject root, string name)
+        {
+            JProperty property = root.Properties()
+                .LastOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (property == null)
+            {
+                var created = new JObject();
+                root[name] = created;
+                return created;
+            }
+            if (property.Value is JObject existing)
+                return existing;
+            var replacement = new JObject();
+            property.Value = replacement;
+            return replacement;
         }
 
         /// <summary>
@@ -219,8 +240,15 @@ namespace revit_mcp_plugin.Configuration
         public static string ReplaceCommands(string registryJson, IEnumerable<CommandConfig> commands)
         {
             JObject root = ParseRegistryObject(registryJson);
-            root["commands"] = JArray.FromObject(commands ?? new List<CommandConfig>());
-            return root.ToString(Formatting.Indented);
+            JArray list = JArray.FromObject(commands ?? new List<CommandConfig>());
+            // Like settings: the last top-level "commands" in any case is the one replaced.
+            JProperty property = root.Properties()
+                .LastOrDefault(p => string.Equals(p.Name, "commands", StringComparison.OrdinalIgnoreCase));
+            if (property != null)
+                property.Value = list;
+            else
+                root["commands"] = list;
+            return RegistryJson.ToText(root);
         }
 
         // null = no file yet: a new object. An empty, "null", non-object or invalid file is
@@ -232,13 +260,7 @@ namespace revit_mcp_plugin.Configuration
             if (string.IsNullOrWhiteSpace(registryJson))
                 throw new InvalidDataException(
                     "commandRegistry.json is empty, so it was left unchanged. Repair it, or re-run the installer to restore it.");
-            // Decimals: a number's text (1.50) is written back as it was, not as 1.5.
-            var token = JsonConvert.DeserializeObject<JToken>(registryJson,
-                new JsonSerializerSettings
-                {
-                    DateParseHandling = DateParseHandling.None,
-                    FloatParseHandling = FloatParseHandling.Decimal,
-                });
+            var token = RegistryJson.Deserialize<JToken>(registryJson);
             var root = token as JObject;
             if (root == null)
                 throw new InvalidDataException(
@@ -332,6 +354,158 @@ namespace revit_mcp_plugin.Configuration
             if (error == ERROR_ACCESS_DENIED)
                 throw new UnauthorizedAccessException(message);
             throw new IOException(message, unchecked((int)0x80070000) | error);
+        }
+    }
+
+    /// <summary>
+    /// <para>commandRegistry.json 的读与写。文字不转日期，数字按 decimal 读（保留 1.50 的写法）。decimal 读不了的
+    /// 记号（NaN、Infinity、超出 decimal 范围的数）会让整份文件读不出；此时把这些记号（只在字符串与注释之外）
+    /// 包成带标记的字符串再读一次，于是只有用到它们的那一项读不出；写回时原样还原。</para>
+    /// <para>Reading and writing commandRegistry.json. Text is never turned into dates and
+    /// numbers are read as decimals (1.50 keeps its text). The tokens a decimal cannot hold -
+    /// NaN, Infinity, numbers out of decimal range - would make the whole file unreadable;
+    /// then those tokens (outside strings and comments only) are wrapped into marked
+    /// strings and the text is read again, so only the setting that holds one is affected.
+    /// Writing puts them back as they were.</para>
+    /// </summary>
+    public static class RegistryJson
+    {
+        private const string Marker = "\u0001\u0002revit-bridge-raw:";
+
+        private static readonly JsonSerializerSettings ReadSettings = new JsonSerializerSettings
+        {
+            DateParseHandling = DateParseHandling.None,
+            FloatParseHandling = FloatParseHandling.Decimal,
+        };
+
+        public static T Deserialize<T>(string json)
+        {
+            try
+            {
+                return JsonConvert.DeserializeObject<T>(json, ReadSettings);
+            }
+            catch (JsonException)
+            {
+                string guarded = Protect(json);
+                if (ReferenceEquals(guarded, json))
+                    throw;
+                return JsonConvert.DeserializeObject<T>(guarded, ReadSettings);
+            }
+        }
+
+        /// <summary>The file text for a registry read with <see cref="Deserialize{T}"/>.</summary>
+        public static string ToText(JToken root)
+        {
+            var marked = new List<JValue>();
+            IEnumerable<JToken> all = root is JContainer container ? container.DescendantsAndSelf() : new[] { root };
+            foreach (JToken token in all)
+            {
+                if (token is JValue value && TryGetProtected(value, out _))
+                    marked.Add(value);
+            }
+            foreach (JValue value in marked)
+            {
+                TryGetProtected(value, out string raw);
+                value.Replace(new JRaw(raw));
+            }
+            return root.ToString(Formatting.Indented);
+        }
+
+        /// <summary>A token <see cref="Protect"/> wrapped, and its original text.</summary>
+        public static bool TryGetProtected(JToken value, out string raw)
+        {
+            raw = null;
+            if (value == null || value.Type != JTokenType.String)
+                return false;
+            string text = value.Value<string>();
+            if (text == null || !text.StartsWith(Marker, StringComparison.Ordinal))
+                return false;
+            raw = text.Substring(Marker.Length);
+            return true;
+        }
+
+        /// <summary>
+        /// <para>Wrap NaN, Infinity and numbers a decimal cannot hold into marked strings;
+        /// the same string instance when there is nothing to wrap.</para>
+        /// </summary>
+        internal static string Protect(string json)
+        {
+            StringBuilder output = null;
+            int copied = 0;
+            int i = 0;
+            int n = json.Length;
+            while (i < n)
+            {
+                char c = json[i];
+                if (c == '"' || c == '\'')
+                {
+                    i = SkipString(json, i);
+                }
+                else if (c == '/' && i + 1 < n && json[i + 1] == '/')
+                {
+                    int end = json.IndexOf('\n', i);
+                    i = end < 0 ? n : end;
+                }
+                else if (c == '/' && i + 1 < n && json[i + 1] == '*')
+                {
+                    int end = json.IndexOf("*/", i + 2, StringComparison.Ordinal);
+                    i = end < 0 ? n : end + 2;
+                }
+                else if (IsTokenChar(c))
+                {
+                    int start = i;
+                    while (i < n && IsTokenChar(json[i]))
+                        i++;
+                    string token = json.Substring(start, i - start);
+                    if (NeedsProtection(token))
+                    {
+                        output = output ?? new StringBuilder(json.Length + 64);
+                        output.Append(json, copied, start - copied);
+                        output.Append("\"\\u0001\\u0002revit-bridge-raw:").Append(token).Append('"');
+                        copied = i;
+                    }
+                }
+                else
+                {
+                    i++;
+                }
+            }
+            if (output == null)
+                return json;
+            output.Append(json, copied, n - copied);
+            return output.ToString();
+        }
+
+        private static bool IsTokenChar(char c) =>
+            char.IsLetterOrDigit(c) || c == '-' || c == '+' || c == '.' || c == '_';
+
+        private static int SkipString(string json, int start)
+        {
+            char quote = json[start];
+            int i = start + 1;
+            while (i < json.Length)
+            {
+                if (json[i] == '\\')
+                    i += 2;
+                else if (json[i] == quote)
+                    return i + 1;
+                else
+                    i++;
+            }
+            return json.Length;
+        }
+
+        private static bool NeedsProtection(string token)
+        {
+            if (token == "NaN" || token == "Infinity" || token == "-Infinity" || token == "+Infinity")
+                return true;
+            char first = token[0];
+            bool numeric = char.IsDigit(first) || first == '-' || first == '.';
+            bool fractional = token.IndexOf('.') >= 0 || token.IndexOf('e') >= 0 || token.IndexOf('E') >= 0;
+            // Whole numbers of any size are read (as BigInteger); only fractions and exponents
+            // that a decimal cannot hold make the reader fail.
+            return numeric && fractional &&
+                   !decimal.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out _);
         }
     }
 }

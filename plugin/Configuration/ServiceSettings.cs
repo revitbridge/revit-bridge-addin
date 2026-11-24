@@ -15,26 +15,56 @@ namespace revit_mcp_plugin.Configuration
     [JsonConverter(typeof(ServiceSettingsConverter))]
     public class ServiceSettings
     {
+        // Every setter records its JSON key while a change is being applied (BeginTracking),
+        // so that SettingsStore writes a setting the user set even when the value equals
+        // what was read (a default standing in for a value it could not read).
+        private HashSet<string> _assigned;
+        private string _logLevel = "Info";
+        private int _port = 18080;
+        private string _mode = "tcp";
+        private string _wsUrl = "";
+        private string _deviceId = "";
+        private string _token = "";
+        private bool _confirmEachRun = true;
+        private bool _allowRemoteCodeExecution;
+        private bool? _localTools;
+        private bool _autoStart;
+        private bool _panelShown;
+
+        /// <summary>Start recording which settings are assigned (SettingsStore, around a change).</summary>
+        internal void BeginTracking()
+        {
+            _assigned = new HashSet<string>(StringComparer.Ordinal);
+        }
+
+        /// <summary>The JSON keys assigned since <see cref="BeginTracking"/>.</summary>
+        internal ICollection<string> AssignedKeys => (ICollection<string>)_assigned ?? new string[0];
+
+        private void Touch(string key)
+        {
+            _assigned?.Add(key);
+        }
+
         /// <summary>
         /// <para>日志级别</para>
         /// <para>Log level.</para>
         /// </summary>
         [JsonProperty("logLevel")]
-        public string LogLevel { get; set; } = "Info";
+        public string LogLevel { get => _logLevel; set { _logLevel = value; Touch("logLevel"); } }
 
         /// <summary>
         /// <para>socket服务端口</para>
         /// <para>Socket service port.</para>
         /// </summary>
         [JsonProperty("port")]
-        public int Port { get; set; } = 18080;
+        public int Port { get => _port; set { _port = value; Touch("port"); } }
 
         /// <summary>
         /// <para>连接模式: "tcp" 或 "websocket"</para>
         /// <para>Connection mode: "tcp" or "websocket".</para>
         /// </summary>
         [JsonProperty("mode")]
-        public string Mode { get; set; } = "tcp";
+        public string Mode { get => _mode; set { _mode = value; Touch("mode"); } }
 
         /// <summary>
         /// <para>WebSocket 服务器地址。无内置默认值：只来自 commandRegistry.json
@@ -44,7 +74,7 @@ namespace revit_mcp_plugin.Configuration
         /// installer (-Server) or the Settings page.</para>
         /// </summary>
         [JsonProperty("wsUrl")]
-        public string WsUrl { get; set; } = "";
+        public string WsUrl { get => _wsUrl; set { _wsUrl = value; Touch("wsUrl"); } }
 
         /// <summary>
         /// <para>设备标识（"dev_" + 12 位），由服务器在兑换配对码时分配。为空 = 未配对。
@@ -54,7 +84,7 @@ namespace revit_mcp_plugin.Configuration
         /// deviceId) loads as "not paired".</para>
         /// </summary>
         [JsonProperty("deviceId")]
-        public string DeviceId { get; set; } = "";
+        public string DeviceId { get => _deviceId; set { _deviceId = value; Touch("deviceId"); } }
 
         /// <summary>
         /// <para>设备 token：兑换配对码时服务器一次性返回，握手首条消息随 deviceId 发送。
@@ -64,7 +94,7 @@ namespace revit_mcp_plugin.Configuration
         /// still the optional local pre-shared token (empty = not checked).</para>
         /// </summary>
         [JsonProperty("token")]
-        public string Token { get; set; } = "";
+        public string Token { get => _token; set { _token = value; Touch("token"); } }
 
         /// <summary>
         /// <para>即席代码逐次确认：带 confirm 的 send_code_to_revit 请求先在 Revit 弹
@@ -74,7 +104,7 @@ namespace revit_mcp_plugin.Configuration
         /// on. The server does not depend on this switch.</para>
         /// </summary>
         [JsonProperty("confirmEachRun")]
-        public bool ConfirmEachRun { get; set; } = true;
+        public bool ConfirmEachRun { get => _confirmEachRun; set { _confirmEachRun = value; Touch("confirmEachRun"); } }
 
         /// <summary>
         /// <para>是否允许远程下发的代码执行类高危方法（send_code_to_revit /
@@ -82,17 +112,22 @@ namespace revit_mcp_plugin.Configuration
         /// <para>Whether remote code-execution methods are allowed. Default off.</para>
         /// </summary>
         [JsonProperty("allowRemoteCodeExecution")]
-        public bool AllowRemoteCodeExecution { get; set; } = false;
+        public bool AllowRemoteCodeExecution
+        {
+            get => _allowRemoteCodeExecution;
+            set { _allowRemoteCodeExecution = value; Touch("allowRemoteCodeExecution"); }
+        }
 
         /// <summary>
         /// <para>"Allow my tools": user command sets (other folders under Commands\) and
         /// manage_solidified_tools register/run. An explicit true or false always wins.
         /// Without the key (a new install, a registry from 0.5.0 or older) it follows the
         /// mode: on in local mode, off in remote mode. The key stays absent when another
-        /// setting is saved, so a later mode change moves the default with it.</para>
+        /// setting is saved, so a later mode change moves the default with it. A value
+        /// that is present but cannot be read ("off", "no") counts as false.</para>
         /// </summary>
         [JsonProperty("localTools", NullValueHandling = NullValueHandling.Ignore)]
-        public bool? LocalTools { get; set; }
+        public bool? LocalTools { get => _localTools; set { _localTools = value; Touch("localTools"); } }
 
         [JsonIgnore]
         public bool LocalToolsEnabled => LocalTools ??
@@ -106,14 +141,14 @@ namespace revit_mcp_plugin.Configuration
         /// <para>Turn the bridge on when Revit starts. Default off.</para>
         /// </summary>
         [JsonProperty("autoStart")]
-        public bool AutoStart { get; set; } = false;
+        public bool AutoStart { get => _autoStart; set { _autoStart = value; Touch("autoStart"); } }
 
         /// <summary>
         /// <para>The Revit Bridge panel has opened by itself once (on the first switch-on of
         /// this install); it never opens by itself again for that reason.</para>
         /// </summary>
         [JsonProperty("panelShown")]
-        public bool PanelShown { get; set; } = false;
+        public bool PanelShown { get => _panelShown; set { _panelShown = value; Touch("panelShown"); } }
 
         /// <summary>True when the file had a "token" whose value could not be read as text.</summary>
         [JsonIgnore]
@@ -123,6 +158,63 @@ namespace revit_mcp_plugin.Configuration
         // Only field names are retained, never rejected values (which can be secrets).
         [JsonIgnore]
         public List<string> InvalidFields { get; } = new List<string>();
+
+        /// <summary>
+        /// <para>读不出、被跳过的设置及其后果（只有键名，不含值）；没有则为 null。面板与按钮提示显示它。</para>
+        /// <para>The settings that could not be read and what was used instead (key names
+        /// only, never values); null when there are none. The panel and the button's tooltip
+        /// show it.</para>
+        /// </summary>
+        [JsonIgnore]
+        public string Problems
+        {
+            get
+            {
+                if (InvalidFields.Count == 0)
+                    return null;
+                var parts = new List<string>();
+                foreach (string name in InvalidFields)
+                {
+                    switch (name.ToLowerInvariant())
+                    {
+                        case "settings": parts.Add("the whole \"settings\" value (defaults used)"); break;
+                        case "token": parts.Add("token (the local bridge does not start)"); break;
+                        case "localtools": parts.Add("localTools (treated as off)"); break;
+                        case "port": parts.Add("port (18080 used)"); break;
+                        case "mode": parts.Add("mode (local used)"); break;
+                        case "confirmeachrun": parts.Add("confirmEachRun (on used)"); break;
+                        default: parts.Add(name + " (default used)"); break;
+                    }
+                }
+                return "commandRegistry.json has settings that could not be read: " + string.Join(", ", parts);
+            }
+        }
+
+        /// <summary>
+        /// <para>两份设置在与安全有关的值上的差别（只给键名）：token 文本、token 能否读出、模式、端口、
+        /// allowRemoteCodeExecution。运行中的服务据此拒绝在设置已变时重载命令。</para>
+        /// <para>The security-relevant settings in which two settings differ (key names
+        /// only): token text, whether the token could be read, mode, port,
+        /// allowRemoteCodeExecution. A running service refuses to reload its commands when the
+        /// settings on disk differ from what it enforces.</para>
+        /// </summary>
+        public static IList<string> SecurityDifferences(ServiceSettings running, ServiceSettings onDisk)
+        {
+            var differences = new List<string>();
+            running = running ?? new ServiceSettings();
+            onDisk = onDisk ?? new ServiceSettings();
+            if (!string.Equals(running.Token ?? "", onDisk.Token ?? "", StringComparison.Ordinal))
+                differences.Add("token");
+            if (running.TokenUnreadable != onDisk.TokenUnreadable && !differences.Contains("token"))
+                differences.Add("token");
+            if (!string.Equals(running.Mode, onDisk.Mode, StringComparison.OrdinalIgnoreCase))
+                differences.Add("mode");
+            if (running.Port != onDisk.Port)
+                differences.Add("port");
+            if (running.AllowRemoteCodeExecution != onDisk.AllowRemoteCodeExecution)
+                differences.Add("allowRemoteCodeExecution");
+            return differences;
+        }
 
         /// <summary>
         /// <para>是否已配对：deviceId 与 token 均非空。</para>
@@ -137,13 +229,15 @@ namespace revit_mcp_plugin.Configuration
     /// <para>Read each setting independently. A bad value must not discard pairing,
     /// command selections or unrelated valid settings in an older registry.
     /// Applies to all existing JsonConvert and SettingsStore load paths.</para>
-    /// <para>Every value is read the way Json.NET read that property from the whole file
-    /// in 0.5.0 (main): a number or a boolean where text is expected becomes its literal
-    /// text ("token": 12345 is the secret "12345", 1.50 stays "1.50", true is "true"),
-    /// a port may be a numeric string (" 18090 "), and "true"/"false"/1/0 are booleans.
-    /// Only a value 0.5.0 could not read at all (it then dropped the whole file) is
-    /// listed in InvalidFields and left at its default; added checks: port 1 to 65535,
-    /// mode "tcp" or "websocket" (any case).</para>
+    /// <para>Each value is read through Json.NET's reader for the property's type: a
+    /// number or a boolean where text is expected becomes text ("token": 12345 is the
+    /// secret "12345", true is "true"; a number is written in plain decimal notation, so
+    /// 1.50 stays "1.50" but 1e2 is "100"), a port may be a numeric string (" 18090 "),
+    /// and "true"/"false"/1/0 are booleans. NaN, Infinity and numbers out of range are
+    /// their own text for a text setting and unreadable for any other (RegistryJson).
+    /// A value that cannot be read is listed in InvalidFields and left at its default
+    /// (localTools: false); added checks: port 1 to 65535, mode "tcp" or "websocket" (any
+    /// case).</para>
     /// </summary>
     public sealed class ServiceSettingsConverter : JsonConverter
     {
@@ -222,14 +316,28 @@ namespace revit_mcp_plugin.Configuration
                                            ex is ArgumentException)
                 {
                     result.InvalidFields.Add(property.Name);
+                    // "Allow my tools" set to something unreadable ("off", "no") means off,
+                    // not the mode's default.
+                    if (string.Equals(property.Name, "localTools", StringComparison.OrdinalIgnoreCase))
+                        result.LocalTools = false;
                 }
             }
             return result;
         }
 
         // One value through Json.NET's own reader for that type, from the value's JSON text.
+        // A token RegistryJson had to protect (NaN, Infinity, a number out of range) is its
+        // own text for a text setting and unreadable for any other.
         private static T ReadAs<T>(JToken value)
         {
+            string raw;
+            if (RegistryJson.TryGetProtected(value, out raw))
+            {
+                if (typeof(T) == typeof(string))
+                    return (T)(object)raw;
+                throw new JsonSerializationException("Not a value of this type.");
+            }
+
             using (var text = new StringReader(value.ToString(Formatting.None)))
             using (var reader = new JsonTextReader(text))
             {

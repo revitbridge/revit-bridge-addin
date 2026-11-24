@@ -21,6 +21,14 @@ namespace revit_mcp_plugin.Configuration
         /// </summary>
         public string LoadError { get; private set; }
 
+        /// <summary>
+        /// <para>文件存在却读不出（空、null、损坏）。此时本机服务不启动；文件不存在（全新安装，用缺省值）不算。</para>
+        /// <para>The file exists but cannot be read (empty, "null", damaged). The local
+        /// service then does not start; a missing file (a fresh install: defaults) is not
+        /// this.</para>
+        /// </summary>
+        public bool FileUnreadable { get; private set; }
+
         public ConfigurationManager(ILogger logger)
         {
             _logger = logger;
@@ -38,17 +46,19 @@ namespace revit_mcp_plugin.Configuration
         {
             FrameworkConfig loaded = null;
             LoadError = null;
+            FileUnreadable = false;
             try
             {
                 if (File.Exists(_configPath))
                 {
                     string json = File.ReadAllText(_configPath);
-                    loaded = JsonConvert.DeserializeObject<FrameworkConfig>(json);
+                    loaded = RegistryJson.Deserialize<FrameworkConfig>(json);
                     if (loaded == null)
                     {
                         // 空文件反序列化为 null。不自动覆盖，由用户修复或重装。
                         // An empty file deserializes to null. Not overwritten automatically.
                         LoadError = "commandRegistry.json is empty";
+                        FileUnreadable = true;
                         _logger.Error("配置文件为空，未加载任何命令: {0}\n请修复该文件，或重新运行安装程序恢复它。\n" +
                                       "The configuration file is empty, so no commands were loaded: {0}\n" +
                                       "Repair the file, or re-run the installer to restore it.", _configPath);
@@ -67,6 +77,7 @@ namespace revit_mcp_plugin.Configuration
             catch (Exception ex)
             {
                 LoadError = "commandRegistry.json could not be read: " + ex.Message;
+                FileUnreadable = File.Exists(_configPath);
                 // 损坏的文件保持原样（不自动覆盖），本次按空配置继续。
                 // A damaged file is left as it is (not overwritten); this run goes on with an
                 // empty configuration.
