@@ -12,6 +12,8 @@ plugin/bin/
 plugin/obj/
 commandset/bin/
 commandset/obj/
+tests/A1Offline/bin/
+tests/A1Offline/obj/
 dist/
 
 # NuGet packages

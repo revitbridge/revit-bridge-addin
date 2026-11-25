@@ -154,6 +154,11 @@
       "assemblyPath": "RevitMCPCommandSet.dll"
     },
     {
+      "commandName": "get_selection_state_in_revit",
+      "description": "Read the current selection count, stamp and document ID",
+      "assemblyPath": "RevitMCPCommandSet.dll"
+    },
+    {
       "commandName": "capture_view_in_revit",
       "description": "Save a PNG of the active view's rectangle, optionally zoomed to an element first",
       "assemblyPath": "RevitMCPCommandSet.dll"
