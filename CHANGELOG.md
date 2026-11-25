@@ -3,6 +3,7 @@
 ## Unreleased
 
 - `activate_view_in_revit(name)` opens a uniquely named view outside a transaction and returns `view_id`, `view_name` and `view_type`. A missing or ambiguous name reports candidate views with their IDs. Hosts can discover the method through `get_bridge_capabilities`.
+- `export_view_image_in_revit(width?, view_id?)` exports the visible region of the active view or a specified view. It returns `png_base64`, pixel `width` and `height`, and `view_name`. The default width is 1600 pixels. If the PNG exceeds 1 MiB, the command tries smaller widths of 1200 and 800 pixels before reporting an error. It preserves desktop focus and cursor position and removes its temporary export directory.
 
 The add-in lists levels, Revit link instances, family types and type categories for a host to choose from, and `get_available_family_types` finds every type of the categories it is asked for. Install over 0.5.0; the configuration format is unchanged; `get_bridge_capabilities` lists the new method in `methods` (`protocol` stays 2, no new feature flag).
 

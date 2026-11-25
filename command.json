@@ -149,6 +149,11 @@
       "assemblyPath": "RevitMCPCommandSet.dll"
     },
     {
+      "commandName": "export_view_image_in_revit",
+      "description": "Export a view to a size-limited PNG and return the image",
+      "assemblyPath": "RevitMCPCommandSet.dll"
+    },
+    {
       "commandName": "capture_view_in_revit",
       "description": "Save a PNG of the active view's rectangle, optionally zoomed to an element first",
       "assemblyPath": "RevitMCPCommandSet.dll"
