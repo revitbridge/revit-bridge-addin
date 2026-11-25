@@ -144,6 +144,11 @@
       "assemblyPath": "RevitMCPCommandSet.dll"
     },
     {
+      "commandName": "activate_view_in_revit",
+      "description": "Activate an existing view by name",
+      "assemblyPath": "RevitMCPCommandSet.dll"
+    },
+    {
       "commandName": "capture_view_in_revit",
       "description": "Save a PNG of the active view's rectangle, optionally zoomed to an element first",
       "assemblyPath": "RevitMCPCommandSet.dll"

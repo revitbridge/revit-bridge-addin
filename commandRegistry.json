@@ -352,6 +352,19 @@
       }
     },
     {
+      "commandName": "activate_view_in_revit",
+      "assemblyPath": "RevitMCPCommandSet/{VERSION}/RevitMCPCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [],
+      "description": "Activate an existing view by name",
+      "developer": {
+        "name": "revitbridge",
+        "email": "",
+        "website": "",
+        "organization": "revitbridge"
+      }
+    },
+    {
       "commandName": "capture_view_in_revit",
       "assemblyPath": "RevitMCPCommandSet/{VERSION}/RevitMCPCommandSet.dll",
       "enabled": true,
