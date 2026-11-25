@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TestRepo Condition="'$(TestRepo)' == ''">$(MSBuildProjectDirectory)/../..</TestRepo>
+    <DefineConstants>$(DefineConstants);REVIT2023_OR_GREATER;REVIT2024_OR_GREATER</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3"/>
+    <Compile Include="$(TestRepo)/commandset/Commands/Views/*.cs" />
+    <Compile Include="$(TestRepo)/commandset/Commands/Bridge/*.cs" />
+    <Compile Include="$(TestRepo)/commandset/Commands/AddinTest/ApiCallCommandBase.cs" />
+    <Compile Include="$(TestRepo)/commandset/Commands/Access/GetSelectionStateCommand.cs" />
+    <Compile Include="$(TestRepo)/commandset/Utils/ElementIdExtensions.cs" />
+  </ItemGroup>
+</Project>
