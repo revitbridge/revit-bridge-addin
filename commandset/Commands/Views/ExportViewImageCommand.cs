@@ -38,7 +38,13 @@ namespace RevitMCPCommandSet.Commands.Views
             }
             finally
             {
-                Directory.Delete(folder, recursive: true);
+                // A scanner or the indexer may still hold the PNG; never let cleanup replace the reply or the real error.
+                for (int attempt = 0; attempt < 2; attempt++)
+                {
+                    try { Directory.Delete(folder, recursive: true); break; }
+                    catch (IOException) { Thread.Sleep(200); }
+                    catch (UnauthorizedAccessException) { Thread.Sleep(200); }
+                }
             }
         }
 

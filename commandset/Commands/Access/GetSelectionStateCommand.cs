@@ -10,6 +10,7 @@ namespace RevitMCPCommandSet.Commands.Access
     {
         public override string CommandName => "get_selection_state_in_revit";
         protected override string RequestKind => "selection";
+        protected override int StartTimeoutMs => 4000;   // polled every few hundred ms: fail fast while a dialog is open
 
         public GetSelectionStateCommand(UIApplication uiApp) : base(uiApp) { }
 

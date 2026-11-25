@@ -10,6 +10,9 @@ namespace RevitMCPCommandSet.Commands.Views
 
         protected virtual string RequestKind => "view";
 
+        // How long to wait for Revit to start the step before withdrawing it.
+        protected virtual int StartTimeoutMs => 30000;
+
         // Only the calling worker waits. A queued step can be withdrawn. Once Revit
         // starts it, its result (and any export files) belong to this caller until it ends.
         protected T RunInRevit<T>(Func<UIApplication, T> work)
@@ -30,7 +33,7 @@ namespace RevitMCPCommandSet.Commands.Views
                 bool completed;
                 try
                 {
-                    completed = RaiseAndWaitForCompletion(30000);
+                    completed = RaiseAndWaitForCompletion(StartTimeoutMs);
                 }
                 catch
                 {
@@ -41,7 +44,7 @@ namespace RevitMCPCommandSet.Commands.Views
                 if (!completed)
                 {
                     if (calls.WithdrawIfNotStarted())
-                        throw new TimeoutException($"Revit did not start the {RequestKind} request within 30 seconds.");
+                        throw new TimeoutException($"Revit did not start the {RequestKind} request within {StartTimeoutMs / 1000} seconds. Close any open dialog or finish the current command in Revit, then try again.");
                     calls.WaitForCompletion(Timeout.Infinite);
                 }
                 if (calls.Error != null)
