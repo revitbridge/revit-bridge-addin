@@ -21,6 +21,15 @@ namespace revit_mcp_plugin.Core
         // 一个请求的后续分片最多等这么久（毫秒）。
         // How long to wait for the next segment of a request that is not complete yet.
         private const int FrameContinuationTimeoutMs = 5000;
+        private const int MaxRequestBytes = 64 * 1024 * 1024;
+
+        private enum FrameReadResult
+        {
+            Complete,
+            TimedOut,
+            Disconnected,
+            TooLarge
+        }
 
         private static SocketService _instance;
         private TcpListener _listener;
@@ -356,106 +365,115 @@ namespace revit_mcp_plugin.Core
 
         private void HandleClientCommunication(object clientObj)
         {
-            TcpClient tcpClient = (TcpClient)clientObj;
-
             try
             {
-                // 在 try 内取流：连接刚接受就被重置时 GetStream 会抛出，而后台线程上
-                // 未处理的异常会结束整个 Revit 进程。
-                // Inside the try: GetStream throws when the connection was reset right after
-                // accept, and an unhandled exception on a background thread ends Revit.
-                NetworkStream stream = tcpClient.GetStream();
-                byte[] buffer = new byte[8192];
-
-                while (_isRunning && tcpClient.Connected)
+                var tcpClient = (TcpClient)clientObj;
+                try
                 {
-                    // 循环读取并累加到 MemoryStream，直到读完当前完整帧再处理，
-                    // 避免单次 8192B 读取截断超长消息（对齐 WebSocket 端的分片累加）。
-                    // Loop-read into a MemoryStream until the full frame is received before
-                    // processing, so messages larger than the buffer are not truncated
-                    // (mirrors the fragment accumulation on the WebSocket side).
-                    int bytesRead;
+                    NetworkStream stream = tcpClient.GetStream();
+                    byte[] buffer = new byte[8192];
 
-                    try
+                    while (_isRunning && tcpClient.Connected)
                     {
-                        bytesRead = stream.Read(buffer, 0, buffer.Length);
-                    }
-                    catch (IOException)
-                    {
-                        // 客户端断开连接
-                        // Client disconnected.
-                        break;
-                    }
-
-                    if (bytesRead == 0)
-                    {
-                        // 客户端断开连接
-                        // Client disconnected.
-                        break;
-                    }
-
-                    string message;
-                    using (var ms = new MemoryStream())
-                    {
-                        ms.Write(buffer, 0, bytesRead);
-                        var frame = new JsonFrameScanner();
-                        frame.Feed(buffer, 0, bytesRead);
-
-                        // 继续读取同一请求的剩余分片：先读完缓冲区里已有的；若 JSON 还没闭合，
-                        // 说明后续分片尚未到达（大请求，或经 Docker 等转发），限时等待其到达。
-                        // Read the rest of the same request: what is buffered first; while the
-                        // JSON value is still open, the next segments have not arrived yet (a
-                        // large request, or one forwarded by a proxy such as Docker Desktop's),
-                        // so wait for them, for a bounded time.
-                        while (true)
+                        FrameReadResult result = ReadFrame(stream, buffer, out string message);
+                        string response;
+                        if (result == FrameReadResult.TooLarge)
                         {
-                            bool waiting = !stream.DataAvailable;
-                            if (waiting && frame.Complete)
-                                break;
-                            int more;
-                            try
-                            {
-                                if (waiting) stream.ReadTimeout = FrameContinuationTimeoutMs;
-                                more = stream.Read(buffer, 0, buffer.Length);
-                            }
-                            catch (IOException)
-                            {
-                                // 超时或连接断开：按已收到的内容处理（不完整则回 Invalid JSON）。
-                                // Timed out or disconnected: process what arrived (Invalid JSON when incomplete).
-                                break;
-                            }
-                            finally
-                            {
-                                if (waiting) stream.ReadTimeout = Timeout.Infinite;
-                            }
-                            if (more <= 0)
-                                break;
-                            ms.Write(buffer, 0, more);
-                            frame.Feed(buffer, 0, more);
+                            response = CreateErrorResponse(null, JsonRPCErrorCodes.InvalidRequest,
+                                "Request too large: the limit is 64 MB");
+                        }
+                        else if (result == FrameReadResult.TimedOut)
+                        {
+                            response = CreateErrorResponse(null, JsonRPCErrorCodes.ParseError, "Invalid JSON");
+                        }
+                        else
+                        {
+                            if (message == null) break;
+                            System.Diagnostics.Trace.WriteLine($"收到消息: {message}\nReceived message: {message}");
+                            response = ProcessJsonRPCRequest(message);
                         }
 
-                        message = Encoding.UTF8.GetString(ms.GetBuffer(), 0, (int)ms.Length);
+                        byte[] responseData = Encoding.UTF8.GetBytes(response);
+                        stream.Write(responseData, 0, responseData.Length);
+                        if (result != FrameReadResult.Complete) break;
                     }
-
-                    System.Diagnostics.Trace.WriteLine($"收到消息: {message}\nReceived message: {message}");
-
-                    string response = ProcessJsonRPCRequest(message);
-
-                    // 发送响应
-                    // Send response.
-                    byte[] responseData = Encoding.UTF8.GetBytes(response);
-                    stream.Write(responseData, 0, responseData.Length);
+                }
+                finally
+                {
+                    tcpClient.Close();
                 }
             }
             catch (Exception ex)
             {
-                // 记录客户端通信异常，便于排障（原为静默吞异常）
-                // Log client-communication errors for diagnostics (was silently swallowed).
-                _logger.Error("Socket 客户端通信异常 / Socket client communication error: {0}", ex.Message);
+                try
+                {
+                    _logger.Error("Socket 客户端通信异常 / Socket client communication error: {0}", ex.Message);
+                }
+                catch (Exception)
+                {
+                    // 即使记录失败，也不能让后台线程的异常终止 Revit。
+                    // Even a logging failure must stay on this client thread.
+                }
             }
-            finally
+        }
+
+        private static FrameReadResult ReadFrame(NetworkStream stream, byte[] buffer, out string message)
+        {
+            message = null;
+            var frame = new JsonFrameScanner();
+            int originalTimeout = stream.ReadTimeout;
+            // 从读取缓冲区的大小开始倍增，容量最多恰好达到 64 MB。
+            // Starting at the read buffer size lets capacity double up to exactly 64 MB.
+            using (var request = new MemoryStream(buffer.Length))
             {
-                tcpClient.Close();
+                FrameReadResult result;
+                while (true)
+                {
+                    // 先读完已缓冲的数据。只有在等待未闭合请求的后续分片时才限时。
+                    // Drain buffered data first. Only a gap in an open request gets a timeout.
+                    bool waiting = request.Length > 0 && !stream.DataAvailable;
+                    if (waiting && frame.Complete)
+                    {
+                        result = FrameReadResult.Complete;
+                        break;
+                    }
+
+                    int bytesRead;
+                    try
+                    {
+                        if (waiting) stream.ReadTimeout = FrameContinuationTimeoutMs;
+                        bytesRead = stream.Read(buffer, 0, buffer.Length);
+                    }
+                    catch (IOException ex) when (waiting && ex.InnerException is SocketException socketEx
+                        && socketEx.SocketErrorCode == SocketError.TimedOut)
+                    {
+                        return FrameReadResult.TimedOut;
+                    }
+                    catch (IOException)
+                    {
+                        result = FrameReadResult.Disconnected;
+                        break;
+                    }
+                    finally
+                    {
+                        if (waiting) stream.ReadTimeout = originalTimeout;
+                    }
+
+                    if (bytesRead == 0)
+                    {
+                        result = FrameReadResult.Disconnected;
+                        break;
+                    }
+                    if (request.Length + bytesRead > MaxRequestBytes)
+                        return FrameReadResult.TooLarge;
+
+                    request.Write(buffer, 0, bytesRead);
+                    frame.Feed(buffer, 0, bytesRead);
+                }
+
+                if (request.Length > 0)
+                    message = Encoding.UTF8.GetString(request.GetBuffer(), 0, (int)request.Length);
+                return result;
             }
         }
 
