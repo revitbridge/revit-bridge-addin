@@ -1,6 +1,6 @@
 # revit-bridge-addin
 
-Revit add-in for [revit-bridge](https://github.com/revitbridge/revit-bridge). It exposes a small JSON-RPC surface (30 commands, including dynamic C# execution) that the `revit-bridge` MCP server or a [revit-bridge-web](https://github.com/revitbridge/revit-bridge-web) host drives.
+Revit add-in for [revit-bridge](https://github.com/revitbridge/revit-bridge). It exposes a small JSON-RPC surface (34 commands, including dynamic C# execution) that the `revit-bridge` MCP server or a [revit-bridge-web](https://github.com/revitbridge/revit-bridge-web) host drives.
 
 Revit 2020、2021、2023-2026 插件：本地 TCP 或远程 WebSocket 两种模式，供 `revit-bridge` MCP 服务器或演示宿主调用。每个 Revit 年份单独安装、单独配置、单独配对。
 
@@ -19,7 +19,7 @@ Fork of [mcp-servers-for-revit](https://github.com/mcp-servers-for-revit/mcp-ser
 | 2026 | .NET 8 (also runs on 2026.5, which uses .NET 10) | load-tested on 2026.5 |
 | 2027 | .NET 10 | not supported: the `Release R27` configuration builds, but no package is released and the installer refuses Revit 2027 |
 
-"Load-tested" means the package of that year was installed with the installer and loaded in a real Revit of that year: the add-in started, Settings saved, the bridge answered over TCP, and a snippet compiled and ran. A year marked "built, not load-tested" compiles without warnings but has not been run in Revit; use it at your own risk and report what you find. The installer installs the supported years only (2020, 2021, 2023-2026); an installed Revit of another year is left out.
+"Load-tested" means the package of that year was installed with the installer and loaded in a real Revit of that year: the add-in started, its settings saved, the bridge answered over TCP, and a snippet compiled and ran. The rows say what was tested when a year was last load-tested; the changes of 0.6.0 were run in Revit 2026 only. A year marked "built, not load-tested" compiles without warnings but has not been run in Revit; use it at your own risk and report what you find. The installer installs the supported years only (2020, 2021, 2023-2026); an installed Revit of another year is left out.
 
 Every Revit year is its own install: its own folder under `%APPDATA%\Autodesk\Revit\Addins\<year>\`, its own settings, port and log, and - for remote mode - its own pairing. To the bridge server each Revit year is a separate device.
 
@@ -172,7 +172,7 @@ Settings live in `<addin folder>\Commands\commandRegistry.json` under `settings`
 
 Each setting is read on its own. A number or `true`/`false` where text is expected is that text (`"token": 12345` is the secret `12345`); numbers are read in plain decimal notation (`1.50` stays `1.50`, `1e2` becomes `100.0`). A port may be a numeric string (`"18090"`), and `"true"`/`"false"` (any case), `1` and `0` are booleans. `NaN`, `Infinity` and numbers too large for a decimal are their own text for a text setting and unreadable for any other. A value that cannot be read is left at its default (for `localTools`: off) without discarding the rest of the file, stays in the file as it is, and is listed in the panel and the button's tooltip; only settings you change are written back, and a setting you set is always written.
 
-The `commands` array in the same file registers the 31 built-in commands from `RevitMCPCommandSet`; their `assemblyPath` names the year folder as `{VERSION}` (`RevitMCPCommandSet/{VERSION}/RevitMCPCommandSet.dll`), which the add-in replaces with the year of the Revit it runs in. `Commands\RevitMCPCommandSet\command.json` lists each command's name, description and assembly path. Saving **Advanced: commands** in the panel rewrites only `commands`, and the panel's other controls only the settings they change; everything else in the file, including properties this version does not know, stays. An empty or damaged file is reported and left as it is, not replaced by defaults, and the bridge does not turn on until it is repaired (its token is unknown); a missing file is a fresh install and starts on the defaults.
+The `commands` array in the same file registers the 34 built-in commands from `RevitMCPCommandSet`; their `assemblyPath` names the year folder as `{VERSION}` (`RevitMCPCommandSet/{VERSION}/RevitMCPCommandSet.dll`), which the add-in replaces with the year of the Revit it runs in. `Commands\RevitMCPCommandSet\command.json` lists each command's name, description and assembly path. Saving **Advanced: commands** in the panel rewrites only `commands`, and the panel's other controls only the settings they change; everything else in the file, including properties this version does not know, stays. An empty or damaged file is reported and left as it is, not replaced by defaults, and the bridge does not turn on until it is repaired (its token is unknown); a missing file is a fresh install and starts on the defaults.
 
 ## License
 
