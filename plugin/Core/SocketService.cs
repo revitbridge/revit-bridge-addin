@@ -18,6 +18,10 @@ namespace revit_mcp_plugin.Core
 {
     public class SocketService
     {
+        // 一个请求的后续分片最多等这么久（毫秒）。
+        // How long to wait for the next segment of a request that is not complete yet.
+        private const int FrameContinuationTimeoutMs = 5000;
+
         private static SocketService _instance;
         private TcpListener _listener;
         private Thread _listenerThread;
@@ -394,23 +398,40 @@ namespace revit_mcp_plugin.Core
                     using (var ms = new MemoryStream())
                     {
                         ms.Write(buffer, 0, bytesRead);
+                        var frame = new JsonFrameScanner();
+                        frame.Feed(buffer, 0, bytesRead);
 
-                        // 继续读取仍在缓冲区中的剩余分片，直到没有更多数据
-                        // Drain the remaining fragments of the same frame still buffered.
-                        while (stream.DataAvailable)
+                        // 继续读取同一请求的剩余分片：先读完缓冲区里已有的；若 JSON 还没闭合，
+                        // 说明后续分片尚未到达（大请求，或经 Docker 等转发），限时等待其到达。
+                        // Read the rest of the same request: what is buffered first; while the
+                        // JSON value is still open, the next segments have not arrived yet (a
+                        // large request, or one forwarded by a proxy such as Docker Desktop's),
+                        // so wait for them, for a bounded time.
+                        while (true)
                         {
+                            bool waiting = !stream.DataAvailable;
+                            if (waiting && frame.Complete)
+                                break;
                             int more;
                             try
                             {
+                                if (waiting) stream.ReadTimeout = FrameContinuationTimeoutMs;
                                 more = stream.Read(buffer, 0, buffer.Length);
                             }
                             catch (IOException)
                             {
+                                // 超时或连接断开：按已收到的内容处理（不完整则回 Invalid JSON）。
+                                // Timed out or disconnected: process what arrived (Invalid JSON when incomplete).
                                 break;
+                            }
+                            finally
+                            {
+                                if (waiting) stream.ReadTimeout = Timeout.Infinite;
                             }
                             if (more <= 0)
                                 break;
                             ms.Write(buffer, 0, more);
+                            frame.Feed(buffer, 0, more);
                         }
 
                         message = Encoding.UTF8.GetString(ms.GetBuffer(), 0, (int)ms.Length);
