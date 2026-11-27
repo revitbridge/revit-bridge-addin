@@ -21,7 +21,7 @@ namespace revit_mcp_plugin.Core
         // 一个请求的后续分片最多等这么久（毫秒）。
         // How long to wait for the next segment of a request that is not complete yet.
         private const int FrameContinuationTimeoutMs = 5000;
-        private const int MaxRequestBytes = 64 * 1024 * 1024;
+        private const int MaxRequestBytes = 16 * 1024 * 1024;
 
         private enum FrameReadResult
         {
@@ -380,7 +380,7 @@ namespace revit_mcp_plugin.Core
                         if (result == FrameReadResult.TooLarge)
                         {
                             response = CreateErrorResponse(null, JsonRPCErrorCodes.InvalidRequest,
-                                "Request too large: the limit is 64 MB");
+                                "Request too large: the limit is 16 MB");
                         }
                         else if (result == FrameReadResult.TimedOut)
                         {
@@ -422,8 +422,8 @@ namespace revit_mcp_plugin.Core
             message = null;
             var frame = new JsonFrameScanner();
             int originalTimeout = stream.ReadTimeout;
-            // 从读取缓冲区的大小开始倍增，容量最多恰好达到 64 MB。
-            // Starting at the read buffer size lets capacity double up to exactly 64 MB.
+            // 从读取缓冲区的大小开始倍增，容量最多恰好达到 16 MB。
+            // Starting at the read buffer size lets capacity double up to exactly 16 MB.
             using (var request = new MemoryStream(buffer.Length))
             {
                 FrameReadResult result;
