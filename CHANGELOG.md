@@ -1,11 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 (2026-11-27)
+
+One ribbon button with a panel replaces the switch and Settings buttons, commits no longer stop at Revit's failure dialog, the add-in lists model items and reads the selection, activates and exports views for a host, and the local TCP service reads a request of any size up to 16 MB whole. Install over 0.5.0: the configuration only gains optional keys. The changes of this release were checked in a real Revit 2026 only; the other years are built by the same code.
 
 The local TCP bridge now waits for the rest of a JSON request that arrives in several segments. Previously, callers could get `Invalid JSON` with no request id for a valid request, starting at about 16 KB through a forwarding proxy or a few hundred KB on loopback.
 
 - If the next segment of an incomplete request takes more than 5 seconds to arrive, the bridge replies once with `Invalid JSON` and closes the connection. Callers can still reuse the connection after a complete request.
-- A request larger than 64 MB gets a JSON-RPC error (`-32600`, `Request too large: the limit is 64 MB`, null id), then the bridge closes the connection.
+- A request larger than 16 MB gets a JSON-RPC error (`-32600`, `Request too large: the limit is 16 MB`, null id), then the bridge closes the connection.
 
 - `get_selection_state_in_revit(focus?, prompt?)` returns `count`, a SHA-256 `stamp` of the sorted selected element IDs, and the same `document_id` used for picked elements. Hosts can poll it while the designer selects normally. With `focus: true`, the command requests foreground once and displays the optional status-bar prompt. If Windows declines foreground, the Revit taskbar button flashes and the command still returns the selection state.
 - `activate_view_in_revit(name)` opens a uniquely named view outside a transaction and returns `view_id`, `view_name` and `view_type`. A missing or ambiguous name reports candidate views with their IDs. Hosts can discover the method through `get_bridge_capabilities`.
